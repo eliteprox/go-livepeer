@@ -236,7 +236,7 @@ fi
 if [[ ! -e "$ROOT/ffmpeg/libavcodec/libavcodec.a" ]]; then
   git clone https://github.com/eliteprox/FFmpeg-netint-livepeer.git "$ROOT/ffmpeg" || echo "FFmpeg dir already exists"
   cd "$ROOT/ffmpeg"
-  git checkout 399aed59ec4b5e4ab5cb380120ea9aeae9be0ce1
+  git checkout adba7845a077c12a99fe35fb96df633528754520
   ./configure ${TARGET_OS:-} $DISABLE_FFMPEG_COMPONENTS --fatal-warnings \
     --enable-libxcoder_logan --enable-ni_logan \
     --enable-libx264 --enable-gpl --enable-libfreetype \
