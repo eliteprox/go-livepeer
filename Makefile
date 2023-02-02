@@ -9,8 +9,11 @@ net/lp_rpc.pb.go: net/lp_rpc.proto
 net/redeemer.pb.go: net/redeemer.proto
 	protoc -I=. --go_out=plugins=grpc:. $^
 
+net/router.pb.go: net/router.proto
+	protoc -I=. --go_out=plugins=grpc:. $^
+
 net/redeemer_mock.pb.go: net/redeemer.pb.go
-	mockgen -source net/redeemer.pb.go -destination net/redeemer_mock.pb.go -package net $^
+	/usr/local/go/bin/mockgen -source net/redeemer.pb.go -destination net/redeemer_mock.pb.go -package net $^
 
 core/test_segment.go:
 	core/test_segment.sh core/test_segment.go
