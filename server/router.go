@@ -5,27 +5,28 @@ import (
 	"errors"
 	"fmt"
 	gonet "net"
+
 	//"net/http"
 	//"crypto/tls"
-	"net/url"
-	"time"
-	"sync"
 	"encoding/json"
 	"io/ioutil"
+	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/net"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/peer"
 
-	"github.com/prometheus-community/pro-bing"
-	
+	probing "github.com/prometheus-community/pro-bing"
 )
 
 const getOrchestratorTimeout = 2 * time.Second
@@ -172,45 +173,45 @@ var errNoClientIp = errors.New("cannot get client ip")
 var errParsingClientIp = errors.New("error parsing client ip")
 
 type LatencyRouter struct {
-	srv  					*grpc.Server
-	testBroadcasterIP 		string
-	workDir 				string
-	roundRobin 				bool
-	cacheTime 				time.Duration
-	searchTimeout 			time.Duration
-	pingBroadcasterTimeout	time.Duration
+	srv                    *grpc.Server
+	testBroadcasterIP      string
+	workDir                string
+	roundRobin             bool
+	cacheTime              time.Duration
+	searchTimeout          time.Duration
+	pingBroadcasterTimeout time.Duration
 
-	bmu sync.RWMutex
+	bmu                    sync.RWMutex
 	closestOrchestratorToB map[string]LatencyCheckResponse
-	orchNodes map[url.URL]OrchNode
-	
-	cmu sync.RWMutex
+	orchNodes              map[url.URL]OrchNode
+
+	cmu     sync.RWMutex
 	clients map[url.URL]*LatencyClient
 }
 
 type OrchNode struct {
-	uri 		url.URL
-	routerUri	url.URL
-	orchInfo	net.OrchestratorInfo
-	updatedAt	time.Time
+	uri       url.URL
+	routerUri url.URL
+	orchInfo  net.OrchestratorInfo
+	updatedAt time.Time
 }
 
 type LatencyCheckResponse struct {
-	RespTime int64
-	OrchUri	url.URL
+	RespTime  int64
+	OrchUri   url.URL
 	UpdatedAt time.Time
 }
 
 type RouterUpdated struct {
-	b_ip_addr 				string
-	orch_router_ip_addr 	string
-	updated 				bool
+	b_ip_addr           string
+	orch_router_ip_addr string
+	updated             bool
 }
 
 type LatencyClient struct {
-	client 	net.LatencyCheckClient
-	conn 	*grpc.ClientConn
-	err 	error
+	client net.LatencyCheckClient
+	conn   *grpc.ClientConn
+	err    error
 }
 
 func CreateOrchNode(uri *url.URL, router_uri *url.URL) OrchNode {
@@ -219,17 +220,17 @@ func CreateOrchNode(uri *url.URL, router_uri *url.URL) OrchNode {
 
 func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_time time.Duration, search_timeout time.Duration, ping_broadcaster_timeout time.Duration, round_robin bool) *LatencyRouter {
 	router := &LatencyRouter{
-				orchNodes: make(map[url.URL]OrchNode), 
-				testBroadcasterIP: test_broadcaster_ip,
-				cacheTime: cache_time,
-				searchTimeout: search_timeout,
-				pingBroadcasterTimeout: ping_broadcaster_timeout,
-				roundRobin: round_robin,
-				closestOrchestratorToB: make(map[string]LatencyCheckResponse),
-				clients: make(map[url.URL]*LatencyClient),
-			}
+		orchNodes:              make(map[url.URL]OrchNode),
+		testBroadcasterIP:      test_broadcaster_ip,
+		cacheTime:              cache_time,
+		searchTimeout:          search_timeout,
+		pingBroadcasterTimeout: ping_broadcaster_timeout,
+		roundRobin:             round_robin,
+		closestOrchestratorToB: make(map[string]LatencyCheckResponse),
+		clients:                make(map[url.URL]*LatencyClient),
+	}
 
-	for _, orch_node := range(orch_nodes) {
+	for _, orch_node := range orch_nodes {
 		router.orchNodes[orch_node.uri] = orch_node
 	}
 
@@ -270,8 +271,8 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, workDir string)
 	r.srv = s
 
 	net.RegisterLatencyCheckServer(s, r)
-	net.RegisterOrchestratorServer(s, r)  //to use the GetOrchestrator rpc client
-	grpc_health_v1.RegisterHealthServer(s, health.NewServer())  //TODO: why is this included?
+	net.RegisterOrchestratorServer(s, r)                       //to use the GetOrchestrator rpc client
+	grpc_health_v1.RegisterHealthServer(s, health.NewServer()) //TODO: why is this included?
 
 	errCh := make(chan error)
 	go func() {
@@ -286,7 +287,7 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, workDir string)
 	}
 
 	glog.Infof("started router server at %v", uri)
-	
+
 	glog.Infof("loading routing")
 	r.LoadRouting()
 
@@ -319,12 +320,12 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, workDir string)
 }
 
 func (r *LatencyRouter) Stop() {
-	for _, client_conn := range(r.clients) {
+	for _, client_conn := range r.clients {
 		if client_conn.err == nil {
 			client_conn.conn.Close()
 		}
 	}
-	
+
 	r.srv.Stop()
 }
 
@@ -336,7 +337,7 @@ func (r *LatencyRouter) SaveRouting() {
 		glog.Errorf("error saving routing: %v", err.Error())
 	}
 
-	return	
+	return
 }
 
 func (r *LatencyRouter) LoadRouting() {
@@ -363,19 +364,19 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 		glog.Errorf("did not return orchestrator info: %v", err.Error())
 		return nil, err
 	}
-	
+
 }
 
 func (r *LatencyRouter) GetLatency(ctx context.Context, req *net.BroadcasterLatencyReq) (*net.LatencyCheckRes, error) {
 	glog.Infof("%v  received latency check request, pinging to provide latency", req.GetUri())
-	
+
 	pingTime := r.SendPing(ctx, req.GetUri())
 	glog.Infof("%v  latency check ping completed in %v milliseconds", req.GetUri(), pingTime)
 	return &net.LatencyCheckRes{RespTime: pingTime}, nil
 }
 
 func (r *LatencyRouter) UpdateRouter(ctx context.Context, req *net.ClosestOrchestratorReq) (*net.ClosestOrchestratorRes, error) {
-	
+
 	b_uri := req.GetBroadcasterUri()
 	o_uri, _ := url.Parse(req.GetOrchestratorUri())
 	respTime := req.GetRespTime()
@@ -402,13 +403,13 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	if ip_err != nil {
 		glog.Errorf("%v  error parsing peer address: %q", client_addr.Addr.String(), ip_err)
 		return nil, ip_err
-	}	
+	}
 
 	//check if in cache period
 	cachedOrchResp, err := r.GetClosestOrchestrator(client_ip)
 	if err == nil && r.cacheTime > time.Second {
 		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
-		if (time_since_cached < r.cacheTime) {
+		if time_since_cached < r.cacheTime {
 			glog.Infof("%v  returning orchestrator info cached %s ago", client_ip, time_since_cached.Round(time.Second))
 			return r.GetOrchNodeInfo(cachedOrchResp.OrchUri), nil
 		}
@@ -417,8 +418,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	latencyCh := make(chan LatencyCheckResponse, totOrch)
 	errCh := make(chan error, totOrch)
 	totCh := make(chan int, totOrch)
-	
-	
+
 	errCtr := 0
 	respCtr := 0
 	totCtr := 0
@@ -470,29 +470,34 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 		case <-totCh:
 			totCtr++
 			if totCtr >= len(r.orchNodes) && r.roundRobin {
-				fastest := int64(4000) //start with 4000ms (4 seconds), all should be faster than this
-				fastestIdx := 0
-				for idx, resp := range(responses) {
-					if resp.RespTime < fastest{
-						fastest = resp.RespTime
-						fastestIdx = idx
-					}
-				}
-				r.SetClosestOrchestrator(client_ip, responses[fastestIdx])
-				glog.Infof("%v  received all responses, sending orchestrator info for %v", client_ip, responses[fastestIdx].OrchUri.String())
-				return r.GetOrchestratorInfo(ctx, req, responses[fastestIdx].OrchUri)
+				//sort the responses based on ping time
+				sort.Slice(responses, func(i, j int) bool {
+					return responses[i].RespTime < responses[j].RespTime
+				})
+
+				return r.SendOrchInfo(ctx, client_ip, req, responses)
 			}
 		case <-lctx.Done():
 			//when the context time limit is complete, return the closest orchestrator so far
-			closestOrchWithResp, err := r.GetClosestOrchestrator(client_ip)
-			if err == nil {
-				go r.updateRouters(client_ip, &closestOrchWithResp)
-				return r.GetOrchestratorInfo(ctx, req, closestOrchWithResp.OrchUri)
-			} else {
-				return nil, errNoOrchestrators
-			}
+			return r.SendOrchInfo(ctx, client_ip, req, responses)
 		}
 	}
+}
+
+func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_ip string, req *net.OrchestratorRequest, responses []LatencyCheckResponse) (*net.OrchestratorInfo, error) {
+	//get orchestrator info for fastest resp time O
+	for idx, _ := range responses {
+		info, err := r.GetOrchestratorInfo(ctx, req, responses[idx].OrchUri)
+		if err == nil {
+			r.SetClosestOrchestrator(client_ip, responses[idx])
+			glog.Infof("%v  received all responses, sending orchestrator info for %v", client_ip, responses[idx].OrchUri.String())
+			return info, err
+		} else {
+			glog.Infof("%v  received all responses, orchestrator failed response for %v  error: %v", client_ip, responses[idx].OrchUri.String(), err.Error())
+		}
+	}
+	//none of the Os returns a GetOrchestrator response, return no orchestrators error
+	return nil, errNoOrchestrators
 }
 
 func (r *LatencyRouter) GetClosestOrchestrator(b_ip_addr string) (LatencyCheckResponse, error) {
@@ -581,7 +586,7 @@ func (r *LatencyRouter) updateRouters(b_ip_addr string, resp *LatencyCheckRespon
 	updateCh := make(chan RouterUpdated, len(r.orchNodes))
 	errCh := make(chan error, len(r.orchNodes))
 
-	upd_ctx, cancel := context.WithTimeout(context.Background(), 10 * time.Second)
+	upd_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	for _, orch_node := range r.orchNodes {
@@ -615,12 +620,12 @@ func (r *LatencyRouter) updateRouters(b_ip_addr string, resp *LatencyCheckRespon
 	}
 }
 
-//TODO: add checks that connection is open
+// TODO: add checks that connection is open
 func (r *LatencyRouter) MonitorClients() {
 	for {
 		//sleep for 5 miinutes and check again
 		time.Sleep(1 * time.Minute)
-		for _, orch_node := range(r.orchNodes) {
+		for _, orch_node := range r.orchNodes {
 			if r.clients[orch_node.uri].err != nil {
 				client, conn, err := startLatencyRouterClient(context.Background(), orch_node.routerUri)
 				r.SetClient(orch_node.uri, LatencyClient{client: client, conn: conn, err: err})
@@ -632,7 +637,7 @@ func (r *LatencyRouter) MonitorClients() {
 }
 
 func (r *LatencyRouter) CreateClients() {
-	for _, orch_node := range(r.orchNodes) {
+	for _, orch_node := range r.orchNodes {
 		client, conn, err := startLatencyRouterClient(context.Background(), orch_node.routerUri)
 		r.SetClient(orch_node.uri, LatencyClient{client: client, conn: conn, err: err})
 	}
@@ -671,5 +676,3 @@ func startLatencyRouterClient(ctx context.Context, router_uri url.URL) (net.Late
 
 	return c, conn, nil
 }
-
-
