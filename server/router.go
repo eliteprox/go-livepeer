@@ -647,12 +647,24 @@ func (r *LatencyRouter) GetClient(orch_uri url.URL) net.LatencyCheckClient {
 	r.cmu.RLock()
 	defer r.cmu.RUnlock()
 
-	if r.clients[orch_uri].client == nil {
-		client, conn, err := startLatencyRouterClient(context.Background(), r.orchNodes[orch_uri].routerUri)
-		r.SetClient(orch_uri, LatencyClient{client: client, conn: conn, err: err})
+	orch_client, orch_client_exists := r.clients[orch_uri]
+	if orch_client_exists {
+		if orch_client.client != nil {
+			return orch_client.client
+		} else {
+			//check node exists and create the client
+			orch_node, orch_exists := r.orchNodes[orch_uri]
+			if orch_exists {
+				client, conn, err := startLatencyRouterClient(context.Background(), orch_node.routerUri)
+				r.SetClient(orch_uri, LatencyClient{client: client, conn: conn, err: err})
+				return client
+			} else {
+				return nil
+			}
+		}
+	} else {
+		return nil
 	}
-
-	return r.clients[orch_uri].client
 }
 
 func (r *LatencyRouter) SetClient(orch_uri url.URL, client LatencyClient) {
