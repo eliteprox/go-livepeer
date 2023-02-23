@@ -381,7 +381,7 @@ func (r *LatencyRouter) UpdateRouter(ctx context.Context, req *net.ClosestOrches
 	o_uri, _ := url.Parse(req.GetOrchestratorUri())
 	respTime := req.GetRespTime()
 
-	r.SetClosestOrchestrator(b_uri, LatencyCheckResponse{RespTime: respTime, OrchUri: *o_uri, UpdatedAt: time.Now()})
+	r.SetClosestOrchestrator(b_uri, &LatencyCheckResponse{RespTime: respTime, OrchUri: *o_uri, UpdatedAt: time.Now()})
 	glog.Infof("router updated for %v to provide orchestrator %v", b_uri, o_uri)
 	return &net.ClosestOrchestratorRes{Updated: true}, nil
 }
@@ -433,7 +433,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 			client := r.GetClient(orch_node.uri)
 			if client == nil {
 				glog.Infof("%v  rpc client is not connected for %v", b_ip_addr, orch_node.routerUri.String())
-				errCh <- err
+				errCh <- errors.New("client not available for " + orch_node.uri.String())
 				return
 			}
 			glog.Infof("%v  sending latency check request for to orch at %v", b_ip_addr, orch_node.routerUri.String())
@@ -458,12 +458,12 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 			glog.Infof("%v  received latency check from %v with ping time of %vms", client_ip, latencyCheckResp.OrchUri.String(), latencyCheckResp.RespTime)
 			//if want to early return, do it here
 			if !r.roundRobin {
-				return r.GetOrchestratorInfo(ctx, req, r.closestOrchestratorToB[client_ip].OrchUri)
+				return r.SendOrchInfo(ctx, client_ip, req, responses)
 			}
 			//update tracking total responses
 			totCh <- 1
 		case err := <-errCh:
-			glog.Error(err)
+			glog.Error(err.Error())
 			errCtr++
 			//update tracking total responses
 			totCh <- 1
@@ -487,9 +487,13 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_ip string, req *net.OrchestratorRequest, responses []LatencyCheckResponse) (*net.OrchestratorInfo, error) {
 	//get orchestrator info for fastest resp time O
 	for idx, _ := range responses {
+		//get the response from O
 		info, err := r.GetOrchestratorInfo(ctx, req, responses[idx].OrchUri)
 		if err == nil {
-			r.SetClosestOrchestrator(client_ip, responses[idx])
+			//cache it
+			r.SetClosestOrchestrator(client_ip, &responses[idx])
+			//update the other routers
+			go r.updateRouters(client_ip, &responses[idx])
 			glog.Infof("%v  received all responses, sending orchestrator info for %v", client_ip, responses[idx].OrchUri.String())
 			return info, err
 		} else {
@@ -501,8 +505,8 @@ func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_ip string, req 
 }
 
 func (r *LatencyRouter) GetClosestOrchestrator(b_ip_addr string) (LatencyCheckResponse, error) {
-	r.bmu.Lock()
-	defer r.bmu.Unlock()
+	r.bmu.RLock()
+	defer r.bmu.RUnlock()
 	closestOrchWithResp, client_ip_exists := r.closestOrchestratorToB[b_ip_addr]
 	if client_ip_exists {
 		return closestOrchWithResp, nil
@@ -511,11 +515,11 @@ func (r *LatencyRouter) GetClosestOrchestrator(b_ip_addr string) (LatencyCheckRe
 	}
 }
 
-func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr string, resp LatencyCheckResponse) {
+func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr string, resp *LatencyCheckResponse) {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
-
-	r.closestOrchestratorToB[b_ip_addr] = resp
+	//cache the fastest O to the B
+	r.closestOrchestratorToB[b_ip_addr] = *resp
 
 	return
 }
