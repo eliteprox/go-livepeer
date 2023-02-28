@@ -557,7 +557,10 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, req *net.Orches
 	}
 	defer conn.Close()
 
-	info, err := client.GetOrchestrator(ctx, req)
+	cctx, cancel := context.WithTimeout(ctx, getOrchestratorTimeout)
+	defer cancel()
+
+	info, err := client.GetOrchestrator(cctx, req)
 	if err != nil {
 		glog.Errorf("could not get OrchestratorInfo from %v, err: %s", orch_uri.String(), err.Error())
 		return nil, errNoOrchestrators
