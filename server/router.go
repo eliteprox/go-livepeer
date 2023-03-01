@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/net"
@@ -362,6 +363,7 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 		return orch_info, nil
 	} else {
 		glog.Errorf("did not return orchestrator info: %v", err.Error())
+		glog.Errorf("failed to get orch info for request: address %v    sig %v", ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
 		return nil, err
 	}
 
