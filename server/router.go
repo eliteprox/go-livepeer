@@ -193,7 +193,7 @@ type LatencyRouter struct {
 type OrchNode struct {
 	uri       url.URL
 	routerUri url.URL
-	orchInfo  net.OrchestratorInfo
+	orchInfo  map[string]net.OrchestratorInfo
 	updatedAt time.Time
 }
 
@@ -216,7 +216,7 @@ type LatencyClient struct {
 }
 
 func CreateOrchNode(uri *url.URL, router_uri *url.URL) OrchNode {
-	return OrchNode{uri: *uri, routerUri: *router_uri}
+	return OrchNode{uri: *uri, routerUri: *router_uri, orchInfo: make(map[string]net.OrchestratorInfo)}
 }
 
 func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_time time.Duration, search_timeout time.Duration, ping_broadcaster_timeout time.Duration, round_robin bool) *LatencyRouter {
@@ -415,7 +415,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	if err == nil && r.cacheTime > time.Second {
 		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
 		if time_since_cached < r.cacheTime {
-			cached_info := r.GetOrchNodeInfo(cachedOrchResp.OrchUri)
+			cached_info := r.GetOrchNodeInfo(client_ip, cachedOrchResp.OrchUri)
 			glog.Infof("%v  returning orchestrator info cached %s ago  orch addr: %v priceperunit: %v", client_ip, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit())
 			return cached_info, nil
 		}
@@ -494,7 +494,7 @@ func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_ip string, req 
 	//get orchestrator info for fastest resp time O
 	for idx, _ := range responses {
 		//get the response from O
-		info, err := r.GetOrchestratorInfo(ctx, req, responses[idx].OrchUri)
+		info, err := r.GetOrchestratorInfo(ctx, client_ip, req, responses[idx].OrchUri)
 		if err == nil {
 			//cache it
 			r.SetClosestOrchestrator(client_ip, &responses[idx])
@@ -531,32 +531,38 @@ func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr string, resp *LatencyCh
 	return
 }
 
-func (r *LatencyRouter) GetOrchNodeInfo(orch_uri url.URL) *net.OrchestratorInfo {
+func (r *LatencyRouter) GetOrchNodeInfo(b_ip_addr string, orch_uri url.URL) *net.OrchestratorInfo {
 	r.bmu.RLock()
 	defer r.bmu.RUnlock()
 	orch_node, orch_node_exists := r.orchNodes[orch_uri]
 	if orch_node_exists {
-		return &orch_node.orchInfo
+		orch_info, b_exists := orch_node.orchInfo[b_ip_addr]
+		if b_exists {
+			return &orch_info
+		} else {
+			return nil
+		}
+
 	} else {
 		return nil
 	}
 }
 
-func (r *LatencyRouter) SetOrchNodeInfo(orch_uri url.URL, orch_info *net.OrchestratorInfo) {
+func (r *LatencyRouter) SetOrchNodeInfo(b_ip_addr string, orch_uri url.URL, orch_info *net.OrchestratorInfo) {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
 
 	//clone the orch info to OrchNode to cache and remove reference to pointer
-	glog.Infof("orch info cached for %v at %v", orch_uri.String(), time.Now())
+	glog.Infof("%v  orch info cached for %v at %v", b_ip_addr, orch_uri.String(), time.Now())
 	node, ok := r.orchNodes[orch_uri]
 	if ok {
-		node.orchInfo = *orch_info
+		node.orchInfo[b_ip_addr] = *orch_info
 		node.updatedAt = time.Now()
 	}
 	r.orchNodes[orch_uri] = node
 }
 
-func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, req *net.OrchestratorRequest, orch_uri url.URL) (*net.OrchestratorInfo, error) {
+func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, b_ip_addr string, req *net.OrchestratorRequest, orch_uri url.URL) (*net.OrchestratorInfo, error) {
 	client, conn, err := startOrchestratorClient(ctx, &orch_uri)
 	if err != nil {
 		glog.Errorf("could not connect to Orchestrator %v  err: %s", orch_uri.String(), err.Error())
@@ -573,7 +579,7 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, req *net.Orches
 		return nil, errNoOrchestrators
 	}
 
-	r.SetOrchNodeInfo(orch_uri, info)
+	r.SetOrchNodeInfo(b_ip_addr, orch_uri, info)
 	return info, nil
 }
 
