@@ -375,11 +375,11 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 	//get the closest orchestrator
 	orch_info, err := r.getOrchestratorInfoClosestToB(ctx, req, client_ip)
 	if err == nil {
-		glog.Infof("%v  sending closest orchestrator info in %s", client_ip, time.Since(st))
+		glog.Infof("%v  sending closest orchestrator info in %s  addr 0x%v sig 0x%v", client_ip, time.Since(st), ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
 		return orch_info, nil
 	} else {
 		glog.Errorf("%v  failed to return orchestrator info: %v", client_ip, err.Error())
-		glog.Errorf("%v  failed to get orch info for request: address %v    sig %v    ctx err %v", client_ip, ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()), ctx.Err())
+		glog.Errorf("%v  failed to get orch info for request  time: %v   ctx err: %v   addr 0x%v   sig 0x%v", client_ip, time.Since(st), ctx.Err(), ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
 		return nil, err
 	}
 
@@ -415,8 +415,9 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	if err == nil && r.cacheTime > time.Second {
 		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
 		if time_since_cached < r.cacheTime {
-			glog.Infof("%v  returning orchestrator info cached %s ago", client_ip, time_since_cached.Round(time.Second))
-			return r.GetOrchNodeInfo(cachedOrchResp.OrchUri), nil
+			cached_info := r.GetOrchNodeInfo(cachedOrchResp.OrchUri)
+			glog.Infof("%v  returning orchestrator info cached %s ago  orch addr: %v priceperunit: %v", client_ip, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit())
+			return cached_info, nil
 		}
 	}
 
@@ -499,7 +500,8 @@ func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_ip string, req 
 			r.SetClosestOrchestrator(client_ip, &responses[idx])
 			//update the other routers
 			go r.updateRouters(client_ip, &responses[idx])
-			glog.Infof("%v  received all responses, sending orchestrator info for %v", client_ip, responses[idx].OrchUri.String())
+			glog.Infof("%v  received all responses, sending orchestrator info for %v  orch addr: %v  priceperunit: %v", client_ip, responses[idx].OrchUri.String(), info.GetTranscoder(), info.PriceInfo.GetPricePerUnit())
+
 			return info, err
 		} else {
 			glog.Infof("%v  received all responses, orchestrator failed response for %v  error: %v", client_ip, responses[idx].OrchUri.String(), err.Error())
