@@ -357,13 +357,29 @@ func (r *LatencyRouter) LoadRouting() {
 
 func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.OrchestratorRequest) (*net.OrchestratorInfo, error) {
 	st := time.Now()
-	orch_info, err := r.getOrchestratorInfoClosestToB(ctx, req)
+
+	//get broadcaster addr
+	client_addr, ok := peer.FromContext(ctx)
+	if ok {
+		glog.Infof("%v  GetOrchestrator request received", client_addr.Addr.String())
+	} else {
+		return nil, errNoClientIp
+	}
+
+	client_ip, _, ip_err := gonet.SplitHostPort(client_addr.Addr.String())
+	if ip_err != nil {
+		glog.Errorf("%v  error parsing peer address: %q", client_addr.Addr.String(), ip_err)
+		return nil, ip_err
+	}
+
+	//get the closest orchestrator
+	orch_info, err := r.getOrchestratorInfoClosestToB(ctx, req, client_ip)
 	if err == nil {
-		glog.Infof("sending closest orchestrator info in %s", time.Since(st))
+		glog.Infof("%v  sending closest orchestrator info in %s", client_ip, time.Since(st))
 		return orch_info, nil
 	} else {
-		glog.Errorf("did not return orchestrator info: %v", err.Error())
-		glog.Errorf("failed to get orch info for request: address %v    sig %v", ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
+		glog.Errorf("%v  failed to return orchestrator info: %v", client_ip, err.Error())
+		glog.Errorf("%v  failed to get orch info for request: address %v    sig %v    ctx err %v", client_ip, ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()), ctx.Err())
 		return nil, err
 	}
 
@@ -384,27 +400,14 @@ func (r *LatencyRouter) UpdateRouter(ctx context.Context, req *net.ClosestOrches
 	respTime := req.GetRespTime()
 
 	r.SetClosestOrchestrator(b_uri, &LatencyCheckResponse{RespTime: respTime, OrchUri: *o_uri, UpdatedAt: time.Now()})
-	glog.Infof("router updated for %v to provide orchestrator %v", b_uri, o_uri)
+	glog.Infof("%v  router updated to provide orchestrator %v", b_uri, o_uri)
 	return &net.ClosestOrchestratorRes{Updated: true}, nil
 }
 
-func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *net.OrchestratorRequest) (*net.OrchestratorInfo, error) {
+func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *net.OrchestratorRequest, client_ip string) (*net.OrchestratorInfo, error) {
 	totOrch := len(r.orchNodes)
 	if totOrch == 0 {
 		return nil, errNoOrchestrators
-	}
-	//get broadcaster addr
-	client_addr, ok := peer.FromContext(ctx)
-	if ok {
-		glog.Infof("%v  GetOrchestrator request received", client_addr.Addr.String())
-	} else {
-		return nil, errNoClientIp
-	}
-
-	client_ip, _, ip_err := gonet.SplitHostPort(client_addr.Addr.String())
-	if ip_err != nil {
-		glog.Errorf("%v  error parsing peer address: %q", client_addr.Addr.String(), ip_err)
-		return nil, ip_err
 	}
 
 	//check if in cache period
@@ -417,6 +420,8 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 		}
 	}
 
+	//send request to each orch node in separate go routine to concurrently process
+	// results come into latencyCh and errors come in errCh
 	latencyCh := make(chan LatencyCheckResponse, totOrch)
 	errCh := make(chan error, totOrch)
 	totCh := make(chan int, totOrch)
@@ -428,8 +433,6 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	lctx, cancel := context.WithTimeout(ctx, r.searchTimeout)
 	defer cancel()
 
-	//send request to each orch node in separate go routine to concurrently process
-	// results come into latencyCh and errors come in errCh
 	for _, orch_node := range r.orchNodes {
 		go func(b_ip_addr string, orch_node OrchNode) {
 			client := r.GetClient(orch_node.uri)
@@ -559,7 +562,7 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, req *net.Orches
 	}
 	defer conn.Close()
 
-	cctx, cancel := context.WithTimeout(ctx, getOrchestratorTimeout)
+	cctx, cancel := context.WithTimeout(context.Background(), getOrchestratorTimeout)
 	defer cancel()
 
 	info, err := client.GetOrchestrator(cctx, req)
