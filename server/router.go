@@ -198,9 +198,10 @@ type OrchNode struct {
 }
 
 type LatencyCheckResponse struct {
-	RespTime  int64
-	OrchUri   url.URL
-	UpdatedAt time.Time
+	RespTime    int64
+	OrchUri     url.URL
+	UpdatedAt   time.Time
+	DoNotUpdate bool
 }
 
 type RouterUpdated struct {
@@ -399,7 +400,7 @@ func (r *LatencyRouter) UpdateRouter(ctx context.Context, req *net.ClosestOrches
 	o_uri, _ := url.Parse(req.GetOrchestratorUri())
 	respTime := req.GetRespTime()
 
-	r.SetClosestOrchestrator(b_uri, &LatencyCheckResponse{RespTime: respTime, OrchUri: *o_uri, UpdatedAt: time.Now()})
+	r.SetClosestOrchestrator(b_uri, &LatencyCheckResponse{RespTime: respTime, OrchUri: *o_uri, UpdatedAt: time.Now(), DoNotUpdate: false})
 	glog.Infof("%v  router updated to provide orchestrator %v", b_uri, o_uri)
 	return &net.ClosestOrchestratorRes{Updated: true}, nil
 }
@@ -414,7 +415,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	cachedOrchResp, err := r.GetClosestOrchestrator(client_ip)
 	if err == nil && r.cacheTime > time.Second {
 		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
-		if time_since_cached < r.cacheTime {
+		if time_since_cached < r.cacheTime || cachedOrchResp.DoNotUpdate {
 			cached_info := r.GetOrchNodeInfo(client_ip, cachedOrchResp.OrchUri)
 			if cached_info != nil {
 				glog.Infof("%v  returning orchestrator info cached %s ago  orch addr: %v priceperunit: %v", client_ip, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit())
@@ -452,7 +453,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 			}
 
 			select {
-			case latencyCh <- LatencyCheckResponse{RespTime: latencyCheckRes.GetRespTime(), OrchUri: orch_node.uri, UpdatedAt: time.Now()}:
+			case latencyCh <- LatencyCheckResponse{RespTime: latencyCheckRes.GetRespTime(), OrchUri: orch_node.uri, UpdatedAt: time.Now(), DoNotUpdate: false}:
 			default:
 			}
 		}(client_ip, orch_node)
