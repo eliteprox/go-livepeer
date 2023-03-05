@@ -416,8 +416,10 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
 		if time_since_cached < r.cacheTime {
 			cached_info := r.GetOrchNodeInfo(client_ip, cachedOrchResp.OrchUri)
-			glog.Infof("%v  returning orchestrator info cached %s ago  orch addr: %v priceperunit: %v", client_ip, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit())
-			return cached_info, nil
+			if cached_info != nil {
+				glog.Infof("%v  returning orchestrator info cached %s ago  orch addr: %v priceperunit: %v", client_ip, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit())
+				return cached_info, nil
+			}
 		}
 	}
 
@@ -459,8 +461,12 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	for {
 		select {
 		case latencyCheckResp := <-latencyCh:
-			responses = append(responses, latencyCheckResp)
-			respCtr++
+			//discard 0ms ping responses because these are responses from servers that block ICMP packets
+			if latencyCheckResp.RespTime > 0 {
+				responses = append(responses, latencyCheckResp)
+				respCtr++
+			}
+
 			glog.Infof("%v  received latency check from %v with ping time of %vms", client_ip, latencyCheckResp.OrchUri.String(), latencyCheckResp.RespTime)
 			//if want to early return, do it here
 			if !r.roundRobin {
@@ -598,7 +604,7 @@ func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) int64 {
 		panic(p_err)
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
-	glog.Infof("%v  ping test results:  %vms", b_ip_addr, stats.AvgRtt.Milliseconds())
+	glog.Infof("%v  ping test results:  %vms  %vperc packet loss", b_ip_addr, stats.AvgRtt.Milliseconds(), stats.PacketLoss)
 	return stats.AvgRtt.Milliseconds()
 }
 
