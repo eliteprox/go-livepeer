@@ -568,7 +568,7 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, b_ip_addr strin
 	}
 	defer conn.Close()
 
-	cctx, cancel := context.WithTimeout(context.Background(), getOrchestratorTimeout)
+	cctx, cancel := context.WithTimeout(ctx, getOrchestratorTimeout)
 	defer cancel()
 
 	info, err := client.GetOrchestrator(cctx, req)
