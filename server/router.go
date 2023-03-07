@@ -462,11 +462,8 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	for {
 		select {
 		case latencyCheckResp := <-latencyCh:
-			//discard 0ms ping responses because these are responses from servers that block ICMP packets
-			if latencyCheckResp.RespTime > 0 {
-				responses = append(responses, latencyCheckResp)
-				respCtr++
-			}
+			responses = append(responses, latencyCheckResp)
+			respCtr++
 
 			glog.Infof("%v  received latency check from %v with ping time of %vms", client_ip, latencyCheckResp.OrchUri.String(), latencyCheckResp.RespTime)
 			//if want to early return, do it here
