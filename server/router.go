@@ -563,7 +563,7 @@ func (r *LatencyRouter) SetOrchNodeInfo(b_ip_addr string, orch_uri url.URL, orch
 func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, b_ip_addr string, req *net.OrchestratorRequest, orch_uri url.URL) (*net.OrchestratorInfo, error) {
 	client, conn, err := startOrchestratorClient(ctx, &orch_uri)
 	if err != nil {
-		glog.Errorf("could not connect to Orchestrator %v  err: %s", orch_uri.String(), err.Error())
+		glog.Errorf("%v  could not connect to Orchestrator %v  err: %s", b_ip_addr, orch_uri.String(), err.Error())
 		return nil, err
 	}
 	defer conn.Close()
@@ -573,8 +573,8 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, b_ip_addr strin
 
 	info, err := client.GetOrchestrator(cctx, req)
 	if err != nil {
-		glog.Errorf("could not get OrchestratorInfo from %v, err: %s", orch_uri.String(), err.Error())
-		return nil, errNoOrchestrators
+		glog.Errorf("%v  could not get OrchestratorInfo from %v, err: %s", b_ip_addr, orch_uri.String(), err.Error())
+		return nil, err
 	}
 
 	r.SetOrchNodeInfo(b_ip_addr, orch_uri, info)
