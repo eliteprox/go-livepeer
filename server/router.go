@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	gonet "net"
+	"os"
 
 	//"net/http"
 	//"crypto/tls"
@@ -350,16 +351,18 @@ func (r *LatencyRouter) SaveRouting() {
 }
 
 func (r *LatencyRouter) LoadRouting() {
-	json_file, err := ioutil.ReadFile(filepath.Join(r.workDir, "routing.json"))
-	if err != nil {
-		glog.Errorf("error reading routing file: %v", err.Error())
-	}
+	routing_file := filepath.Join(r.workDir, "routing.json")
+	if _, err := os.Stat(routing_file); err == nil {
+		json_file, err := ioutil.ReadFile(routing_file)
+		if err != nil {
+			glog.Errorf("error reading routing file: %v", err.Error())
+		}
 
-	err = json.Unmarshal([]byte(json_file), &r.closestOrchestratorToB)
-	if err != nil {
-		glog.Errorf("error loading routing: %v", err.Error())
+		err = json.Unmarshal([]byte(json_file), &r.closestOrchestratorToB)
+		if err != nil {
+			glog.Errorf("error loading routing: %v", err.Error())
+		}
 	}
-
 	return
 }
 
