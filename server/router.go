@@ -412,8 +412,10 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	if err == nil && r.cacheTime > time.Second {
 		time_since_cached := time.Since(cachedOrchResp.UpdatedAt)
 		if time_since_cached < r.cacheTime || cachedOrchResp.DoNotUpdate {
-			cached_info := r.GetOrchNodeInfo(client_ip, cachedOrchResp.OrchUri)
-			if cached_info != nil {
+			//get fresh OrchestratorInfo each time
+			//cached_info := r.GetOrchNodeInfo(client_ip, cachedOrchResp.OrchUri)
+			cached_info, err := r.GetOrchestratorInfo(ctx, client_ip, req, cachedOrchResp.OrchUri)
+			if err == nil {
 				glog.Infof("%v  returning orchestrator info cached %s ago  orch addr: %v priceperunit: %v", client_ip, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit())
 				return cached_info, nil
 			}
@@ -529,6 +531,7 @@ func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr string, resp *LatencyCh
 	r.closestOrchestratorToB[b_ip_addr] = *resp
 }
 
+// TODO: this is not needed if cannot cache the OrchestratorInfo response
 func (r *LatencyRouter) GetOrchNodeInfo(b_ip_addr string, orch_uri url.URL) *net.OrchestratorInfo {
 	r.bmu.RLock()
 	defer r.bmu.RUnlock()
@@ -540,12 +543,12 @@ func (r *LatencyRouter) GetOrchNodeInfo(b_ip_addr string, orch_uri url.URL) *net
 		} else {
 			return nil
 		}
-
 	} else {
 		return nil
 	}
 }
 
+// TODO: this is not needed if cannot cache the OrchestratorInfo response
 func (r *LatencyRouter) SetOrchNodeInfo(b_ip_addr string, orch_uri url.URL, orch_info *net.OrchestratorInfo) {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
@@ -577,7 +580,8 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, b_ip_addr strin
 		return nil, err
 	}
 
-	r.SetOrchNodeInfo(b_ip_addr, orch_uri, info)
+	//new OrchestratorInfo fetched each time a GetOrchestrator request is received
+	//r.SetOrchNodeInfo(b_ip_addr, orch_uri, info)
 	return info, nil
 }
 
