@@ -18,16 +18,17 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/clog"
+	lpcrypto "github.com/livepeer/go-livepeer/crypto"
 	"github.com/livepeer/go-livepeer/net"
+	probing "github.com/prometheus-community/pro-bing"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/peer"
-
-	probing "github.com/prometheus-community/pro-bing"
 )
 
 const getOrchestratorTimeout = 2 * time.Second
@@ -358,7 +359,6 @@ func (r *LatencyRouter) LoadRouting() {
 
 func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.OrchestratorRequest) (*net.OrchestratorInfo, error) {
 	st := time.Now()
-
 	//get broadcaster addr
 	client_addr, ok := peer.FromContext(ctx)
 	if ok {
@@ -373,6 +373,13 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 		return nil, ip_err
 	}
 
+	//verify GetOrchestrator request
+	b_addr := ethcommon.BytesToAddress(req.GetAddress())
+	if r.VerifySig(b_addr.Hex(), req.GetSig()) == false {
+		glog.Infof("%v  GetOrchestrator request failed verification", client_addr.Addr.String())
+		return nil, errors.New("GetOrchestrator request failed verification")
+	}
+
 	//get the closest orchestrator
 	orch_info, err := r.getOrchestratorInfoClosestToB(ctx, req, client_ip)
 	if err == nil {
@@ -383,7 +390,11 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 		glog.Errorf("%v  failed to get orch info for request  time: %v   ctx err: %v   addr 0x%v   sig 0x%v", client_ip, time.Since(st), ctx.Err(), ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
 		return nil, err
 	}
+}
 
+// include GetOrchestrator request verification similar to rpc.go for orchestrator
+func (r *LatencyRouter) VerifySig(msg string, sig []byte) bool {
+	return lpcrypto.VerifySig(ethcommon.HexToAddress(msg), crypto.Keccak256([]byte(msg)), sig)
 }
 
 func (r *LatencyRouter) GetLatency(ctx context.Context, req *net.BroadcasterLatencyReq) (*net.LatencyCheckRes, error) {
