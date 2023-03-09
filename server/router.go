@@ -379,11 +379,16 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 	//get the closest orchestrator
 	orch_info, err := r.getOrchestratorInfoClosestToB(ctx, req, client_ip)
 	if err == nil {
-		glog.Infof("%v  sending closest orchestrator info in %s  addr 0x%v sig 0x%v", client_ip, time.Since(st), ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
+		glog.Infof("%v  sending closest orchestrator info in %s  addr 0x%v sig 0x%v", client_addr.Addr.String(), time.Since(st), b_addr.Hex(), ethcommon.Bytes2Hex(req.GetSig()))
 		return orch_info, nil
 	} else {
-		glog.Errorf("%v  failed to return orchestrator info: %v", client_ip, err.Error())
-		glog.Errorf("%v  failed to get orch info for request  time: %v   ctx err: %v   addr 0x%v   sig 0x%v", client_ip, time.Since(st), ctx.Err(), ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
+		if errors.Is(err, context.Canceled) == false {
+			glog.Errorf("%v  failed to return orchestrator info: %v", client_ip, err.Error())
+			glog.Errorf("%v  failed to get orch info for request  time: %v   ctx err: %v   addr 0x%v   sig 0x%v", client_addr.Addr.String(), time.Since(st), ctx.Err(), ethcommon.Bytes2Hex(req.GetAddress()), ethcommon.Bytes2Hex(req.GetSig()))
+		} else {
+			glog.Errorf("%v  request canceled by Broadcaster in %v ", client_addr.Addr.String())
+		}
+
 		return nil, err
 	}
 }
