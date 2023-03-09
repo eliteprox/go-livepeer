@@ -381,7 +381,7 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 	}
 
 	//get the closest orchestrator
-	orch_info, err := r.getOrchestratorInfoClosestToB(ctx, req, client_ip)
+	orch_info, err := r.getOrchestratorInfoClosestToB(context.Background(), req, client_ip)
 	if err == nil {
 		glog.Infof("%v  sending closest orchestrator info in %s  addr 0x%v sig 0x%v", client_addr.Addr.String(), time.Since(st), b_addr.Hex(), ethcommon.Bytes2Hex(req.GetSig()))
 		return orch_info, nil
