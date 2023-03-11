@@ -534,8 +534,6 @@ func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr ClientInfo, resp *Laten
 	defer r.bmu.Unlock()
 	//cache the fastest O to the B
 	r.closestOrchestratorToB[b_ip_addr.ip] = *resp
-
-	return
 }
 
 // TODO: this is not needed if cannot cache the OrchestratorInfo response
