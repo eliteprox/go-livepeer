@@ -338,8 +338,6 @@ func (r *LatencyRouter) SaveRouting() {
 	if err != nil {
 		glog.Errorf("error saving routing: %v", err.Error())
 	}
-
-	return
 }
 
 func (r *LatencyRouter) LoadRouting() {
@@ -352,8 +350,6 @@ func (r *LatencyRouter) LoadRouting() {
 	if err != nil {
 		glog.Errorf("error loading routing: %v", err.Error())
 	}
-
-	return
 }
 
 func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.OrchestratorRequest) (*net.OrchestratorInfo, error) {
@@ -414,7 +410,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	//check if in cache period
 	cachedOrchResp, err := r.GetClosestOrchestrator(client_ip)
 	if err == nil && r.cacheTime > time.Second {
-		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
+		time_since_cached := time.Since(cachedOrchResp.UpdatedAt)
 		if time_since_cached < r.cacheTime || cachedOrchResp.DoNotUpdate {
 			cached_info := r.GetOrchNodeInfo(client_ip, cachedOrchResp.OrchUri)
 			if cached_info != nil {
@@ -534,8 +530,6 @@ func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr string, resp *LatencyCh
 	defer r.bmu.Unlock()
 	//cache the fastest O to the B
 	r.closestOrchestratorToB[b_ip_addr] = *resp
-
-	return
 }
 
 func (r *LatencyRouter) GetOrchNodeInfo(b_ip_addr string, orch_uri url.URL) *net.OrchestratorInfo {
@@ -711,6 +705,9 @@ func startLatencyRouterClient(ctx context.Context, router_uri url.URL) (net.Late
 		return nil, nil, err
 
 	}
+
+	glog.Infof("Connected to uri=%v", router_uri.String())
+	glog.Infof("Starting latency client for=%v", router_uri.String())
 	c := net.NewLatencyCheckClient(conn)
 
 	return c, conn, nil
