@@ -362,8 +362,9 @@ func (r *LatencyRouter) LoadRouting() {
 		if err != nil {
 			glog.Errorf("error loading routing: %v", err.Error())
 		}
+	} else {
+		glog.Errorf("no routing file exists")
 	}
-	return
 }
 
 func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.OrchestratorRequest) (*net.OrchestratorInfo, error) {
