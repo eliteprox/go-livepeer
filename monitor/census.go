@@ -256,11 +256,8 @@ func InitCensus(nodeType NodeType, version string) {
 	census.kOrchestratorURI = tag.MustNewKey("orchestrator_uri")
 	census.kOrchestratorAddress = tag.MustNewKey("orchestrator_address")
 	census.kFVErrorType = tag.MustNewKey("fverror_type")
-<<<<<<< HEAD
 	census.kSegClassName = tag.MustNewKey("seg_class_name")
-=======
 	census.kTranscoderURI = tag.MustNewKey("transcoder_uri")
->>>>>>> 8d05ef8b... add alternate remote transcoder selection for transcode time and priority. Also add method to set max sessions for orch while running.
 	census.ctx, err = tag.New(ctx, tag.Insert(census.kNodeType, string(nodeType)), tag.Insert(census.kNodeID, NodeID))
 	if err != nil {
 		glog.Fatal("Error creating context", err)
@@ -1209,7 +1206,7 @@ func SetTranscoderPPNS(t_uri string, ppns float64) {
 }
 
 func SetTranscoderLoad(t_uri string, load int) {
-		stats.RecordWithTags(census.ctx, manifestIDTag(census.ctx, tag.Insert(census.kTranscoderURI, t_uri)), census.mTranscoderLoad.M(int64(load)))
+	stats.RecordWithTags(census.ctx, manifestIDTag(census.ctx, tag.Insert(census.kTranscoderURI, t_uri)), census.mTranscoderLoad.M(int64(load)))
 }
 
 func SetTranscoderPriority(t_uri string, priority int) {
