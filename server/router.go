@@ -259,7 +259,7 @@ func (r *LatencyRouter) Ping(ctx context.Context, req *net.PingPong) (*net.PingP
 	return &net.PingPong{Value: []byte{}}, nil
 }
 
-func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string, workDir string, secret string) error {
+func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string, workDir string, secret string, backgroundUpdate bool) error {
 	r.workDir = workDir
 	r.secret = secret
 
@@ -337,6 +337,13 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 		//check if clients are connected every minute, try to connect if not connected
 		r.MonitorClients()
 	}()
+
+	if backgroundUpdate {
+		go func() {
+			//check if ping should be updated
+			r.MonitorBroadcasters()
+		}()
+	}
 
 	//if test ips are specified, start testing
 	if r.testBroadcasterIP != "" {
@@ -420,7 +427,7 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 
 	//get the closest orchestrator
 	orch_info, err := r.getOrchestratorInfoClosestToB(context.Background(), req, client_addr.Addr.String())
-	if err == nil {
+	if orch_info != nil && err == nil {
 		glog.Infof("%v  sending closest orchestrator info in %s  addr %v", client_addr.Addr.String(), time.Since(st), b_addr.Hex())
 		return orch_info, nil
 	} else {
@@ -455,12 +462,12 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 	client_info := ClientInfo{addr: client_addr, ip: client_ip, port: client_port}
 
 	//check if in cache period
+	//skip if no cached orchestrator, cacheTime not set or the OrchestratorRequest is nil
 	cachedOrchResp, err := r.GetClosestOrchestrator(client_info)
-	if err == nil && r.cacheTime > time.Second {
+	if err == nil && r.cacheTime > time.Second && req != nil {
 		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
 		if time_since_cached < r.cacheTime || cachedOrchResp.DoNotUpdate {
 			//get fresh OrchestratorInfo each time
-			//cached_info := r.GetOrchNodeInfo(client_ip, cachedOrchResp.OrchUri)
 			cached_info, err := r.GetOrchestratorInfo(ctx, client_info, req, cachedOrchResp.OrchUri)
 			if err == nil {
 				glog.Infof("%v  returning orchestrator cached %s ago  orch addr: %v priceperunit: %v", client_addr, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit())
@@ -525,11 +532,6 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 		case <-totCh:
 			totCtr++
 			if totCtr >= len(r.orchNodes) && r.roundRobin {
-				//sort the responses based on ping time
-				sort.Slice(responses, func(i, j int) bool {
-					return responses[i].RespTime < responses[j].RespTime
-				})
-
 				return r.SendOrchInfo(ctx, client_info, req, responses)
 			}
 		case <-lctx.Done():
@@ -541,26 +543,56 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 }
 
 func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_info ClientInfo, req *net.OrchestratorRequest, responses []LatencyCheckResponse) (*net.OrchestratorInfo, error) {
-	//get orchestrator info for fastest resp time O
-	for idx, _ := range responses {
-		//get the response from O
-		info, err := r.GetOrchestratorInfo(ctx, client_info, req, responses[idx].OrchUri)
-		if err == nil {
-			//cache it
-			r.SetClosestOrchestrator(client_info, &responses[idx])
-			//update the other routers
-			go r.updateRouters(client_info.ip, &responses[idx])
-			glog.Infof("%v  received all responses, sending orchestrator info for %v  orch addr: %v  priceperunit: %v", client_info.addr, responses[idx].OrchUri.String(), info.GetTranscoder(), info.PriceInfo.GetPricePerUnit())
+	//sort the responses based on ping time
+	sort.Slice(responses, func(i, j int) bool {
+		return responses[i].RespTime < responses[j].RespTime
+	})
+	//if req is nil we are updating ping tests only, no OrchestratorInfo to send back
+	if req == nil {
+		for idx, _ := range responses {
+			glog.Infof("%v  pinging Orchestrator to confirm status", client_info.addr)
+			//rpc ping orch to check its up
+			ping_test, err := r.PingOrchestrator(ctx, client_info.addr, responses[idx].OrchUri)
+			if err != nil {
+				glog.Infof("%v  rpc ping failed %v", client_info.addr, err.Error())
+			}
+			if ping_test {
+				//cache it
+				r.SetClosestOrchestrator(client_info, &responses[idx])
+				//update the other routers
+				go r.updateRouters(client_info.ip, &responses[idx])
+				//return nil because we are just updating ping tests
+				glog.Infof("%v  updated cached orchestrator to %v", client_info.addr, responses[idx].OrchUri.String())
+				return nil, nil
+			}
 
-			return info, err
-		} else {
-			glog.Infof("%v  received all responses, orchestrator failed response for %v  error: %v", client_info.addr, responses[idx].OrchUri.String(), err.Error())
 		}
+		//if rpc ping does not work on any of the Orch nodes update latency check response so background process does not run again
+		r.SetClosestOrchestrator(client_info, &responses[0])
+		return nil, nil
+	} else {
+		//get orchestrator info for fastest resp time O
+		for idx, _ := range responses {
+			//get the response from O
+			info, err := r.GetOrchestratorInfo(ctx, client_info, req, responses[idx].OrchUri)
+			if err == nil {
+				//cache it
+				r.SetClosestOrchestrator(client_info, &responses[idx])
+				//update the other routers
+				go r.updateRouters(client_info.ip, &responses[idx])
+				glog.Infof("%v  received all responses, sending orchestrator info for %v  orch addr: %v  priceperunit: %v", client_info.addr, responses[idx].OrchUri.String(), info.GetTranscoder(), info.PriceInfo.GetPricePerUnit())
+
+				return info, err
+			} else {
+				glog.Infof("%v  received all responses, orchestrator failed response for %v  error: %v", client_info.addr, responses[idx].OrchUri.String(), err.Error())
+			}
+		}
+
+		//none of the Os returns a GetOrchestrator response, return no orchestrators error
+		//   when the router cannot connect to an O the searchTimeout will flush to here and return no orchestrators
+		//   connections to O waits 3 seconds.
+		return nil, errNoOrchestrators
 	}
-	//none of the Os returns a GetOrchestrator response, return no orchestrators error
-	//   when the router cannot connect to an O the searchTimeout will flush to here and return no orchestrators
-	//   connections to O waits 3 seconds.
-	return nil, errNoOrchestrators
 }
 
 func (r *LatencyRouter) GetClosestOrchestrator(b_ip_addr ClientInfo) (LatencyCheckResponse, error) {
@@ -583,36 +615,23 @@ func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr ClientInfo, resp *Laten
 	return
 }
 
-// TODO: this is not needed if cannot cache the OrchestratorInfo response
-func (r *LatencyRouter) GetOrchNodeInfo(b_ip_addr ClientInfo, orch_uri url.URL) *net.OrchestratorInfo {
-	r.bmu.RLock()
-	defer r.bmu.RUnlock()
-	orch_node, orch_node_exists := r.orchNodes[orch_uri]
-	if orch_node_exists {
-		orch_info, b_exists := orch_node.orchInfo[b_ip_addr.ip]
-		if b_exists {
-			return &orch_info
-		} else {
-			return nil
-		}
+func (r *LatencyRouter) PingOrchestrator(ctx context.Context, broadcaster_ip string, orch_uri url.URL) (bool, error) {
+	client, conn, err := startOrchestratorClient(ctx, &orch_uri)
+	if err != nil {
+		glog.Errorf("%v  could not connect to Orchestrator %v  err: %s", broadcaster_ip, orch_uri.String(), err.Error())
+		return false, err
+	}
+	defer conn.Close()
+
+	cctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+
+	_, ping_err := client.Ping(cctx, &net.PingPong{Value: []byte("are you there")})
+	if ping_err == nil {
+		return true, nil
 	} else {
-		return nil
+		return false, ping_err
 	}
-}
-
-// TODO: this is not needed if cannot cache the OrchestratorInfo response
-func (r *LatencyRouter) SetOrchNodeInfo(b_ip_addr ClientInfo, orch_uri url.URL, orch_info *net.OrchestratorInfo) {
-	r.bmu.Lock()
-	defer r.bmu.Unlock()
-
-	//clone the orch info to OrchNode to cache and remove reference to pointer
-	glog.Infof("%v  orch info cached for %v at %v", b_ip_addr.addr, orch_uri.String(), time.Now())
-	node, ok := r.orchNodes[orch_uri]
-	if ok {
-		node.orchInfo[b_ip_addr.ip] = *orch_info
-		node.updatedAt = time.Now()
-	}
-	r.orchNodes[orch_uri] = node
 }
 
 func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, client_info ClientInfo, req *net.OrchestratorRequest, orch_uri url.URL) (*net.OrchestratorInfo, error) {
@@ -633,6 +652,19 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, client_info Cli
 	}
 
 	return info, nil
+}
+
+func (r *LatencyRouter) MonitorBroadcasters() {
+	glog.Infof("background process started to monitor and update pings to broadcasters, first check is in 1 minute")
+	for {
+		time.Sleep(1 * time.Minute)
+		for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
+			if lat_chk_resp.UpdatedAt.Add(r.cacheTime).Before(time.Now().Add(10 * time.Minute)) {
+				glog.Infof("%v  updating ping times for broadcaster ip that will expire in %s", broadcaster_ip, lat_chk_resp.UpdatedAt.Add(r.cacheTime).Sub(time.Now()))
+				go r.getOrchestratorInfoClosestToB(context.Background(), nil, broadcaster_ip+":80") //add port so can parse ip addr
+			}
+		}
+	}
 }
 
 func (r *LatencyRouter) GetLatency(ctx context.Context, req *net.BroadcasterLatencyReq) (*net.LatencyCheckRes, error) {

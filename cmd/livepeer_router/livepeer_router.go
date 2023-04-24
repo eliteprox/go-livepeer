@@ -45,6 +45,7 @@ func main() {
 	cacheTime := flag.Duration("cacheTime", 60*time.Minute, "input time to cache closest orch (minutes = 5m, seconds = 45s, default is 60 minutes)")
 	roundRobin := flag.Bool("roundRobin", true, "ping all orchestrators to get closest orch, returns first orch to respond if set to false")
 	testBroadcasterIP := flag.String("testBroadcasterIP", "", "input known broadcaster IP address for testing (comma delimited)")
+	backgroundUpdate := flag.Bool("backgroundUpdate", false, "update ping tests to broadcasters in background process")
 
 	flag.Parse()
 
@@ -124,7 +125,7 @@ func main() {
 	if *useLatencyToB {
 		srv := server.NewLatencyRouter(orch_nodes, *testBroadcasterIP, *cacheTime, *searchTimeout, *pingBroadcasterTimeout, *roundRobin)
 		go func() {
-			errCh <- srv.Start(uri, serviceURI, dPort, *datadir, *secret)
+			errCh <- srv.Start(uri, serviceURI, dPort, *datadir, *secret, *backgroundUpdate)
 		}()
 
 		c := make(chan os.Signal)
