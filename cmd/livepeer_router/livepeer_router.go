@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,11 +36,13 @@ func main() {
 	datadir := flag.String("datadir", "", "Directory that data is stored in")
 	httpAddr := flag.String("httpAddr", "", "Address (IP:port) to bind to for HTTP")
 	serviceAddr := flag.String("serviceAddr", "", "Publicly accessible URI (IP:port or hostname) to receive requests at. All routers need to run on this port.")
+	dataPort := flag.String("dataPort", "", "port to serve saved routing data")
 	orchAddr := flag.String("orchAddr", "", "Comma delimited list of orchestrator URIs (IP:port or hostname) to use")
 	useLatencyToB := flag.Bool("useLatencyToB", false, "select orchestrator based on latency to broadcaster")
-	searchTimeout := flag.Duration("searchTimeout", 2500*time.Millisecond, "time to wait for orchestrators response.  Default is 2.5 seconds. Needs to be under 3 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
-	pingBroadcasterTimeout := flag.Duration("pingBroadcasterTimeout", 500*time.Millisecond, "time to wait for orchestrators response.  Default is 500 milliseconds. Response needs to be under 4 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
-	cacheTime := flag.Duration("cacheTime", 5*time.Minute, "input time to cache closest orch (minutes = 5m, seconds = 45s, default is 5 minutes)")
+	searchTimeout := flag.Duration("searchTimeout", 600*time.Millisecond, "time to wait for orchestrators response.  Default is 2.5 seconds. Needs to be under 3 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
+	pingBroadcasterTimeout := flag.Duration("pingBroadcasterTimeout", 300*time.Millisecond, "time to wait for orchestrators response.  Default is 500 milliseconds. Response needs to be under 4 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
+	secret := flag.String("secret", "", "secret to secure router data endpoint with")
+	cacheTime := flag.Duration("cacheTime", 60*time.Minute, "input time to cache closest orch (minutes = 5m, seconds = 45s, default is 60 minutes)")
 	roundRobin := flag.Bool("roundRobin", true, "ping all orchestrators to get closest orch, returns first orch to respond if set to false")
 	testBroadcasterIP := flag.String("testBroadcasterIP", "", "input known broadcaster IP address for testing (comma delimited)")
 
@@ -80,6 +83,16 @@ func main() {
 		glog.Fatalf("Could not parse -httpAddr: %v", err)
 	}
 
+	dPort := ""
+	if *dataPort == "" {
+		sPort, err := strconv.Atoi(serviceURI.Port())
+		if err == nil {
+			dPort = strconv.Itoa(sPort + 1)
+		} else {
+			dPort = *dataPort
+		}
+	}
+
 	var uris []*url.URL
 	var orch_nodes []server.OrchNode
 	if len(*orchAddr) > 0 {
@@ -111,8 +124,9 @@ func main() {
 	if *useLatencyToB {
 		srv := server.NewLatencyRouter(orch_nodes, *testBroadcasterIP, *cacheTime, *searchTimeout, *pingBroadcasterTimeout, *roundRobin)
 		go func() {
-			errCh <- srv.Start(uri, serviceURI, *datadir)
+			errCh <- srv.Start(uri, serviceURI, dPort, *datadir, *secret)
 		}()
+
 		c := make(chan os.Signal)
 		signal.Notify(c, os.Interrupt)
 		select {
@@ -142,5 +156,4 @@ func main() {
 			}
 		}
 	}
-
 }

@@ -6,11 +6,11 @@ import (
 	"fmt"
 	gonet "net"
 	"os"
+	"strconv"
 
-	//"net/http"
-	//"crypto/tls"
 	"encoding/json"
 	"io/ioutil"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -189,6 +189,7 @@ type LatencyRouter struct {
 	cacheTime              time.Duration
 	searchTimeout          time.Duration
 	pingBroadcasterTimeout time.Duration
+	secret                 string
 
 	bmu                    sync.RWMutex
 	closestOrchestratorToB map[string]LatencyCheckResponse
@@ -258,8 +259,9 @@ func (r *LatencyRouter) Ping(ctx context.Context, req *net.PingPong) (*net.PingP
 	return &net.PingPong{Value: []byte{}}, nil
 }
 
-func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, workDir string) error {
+func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string, workDir string, secret string) error {
 	r.workDir = workDir
+	r.secret = secret
 
 	listener, err := gonet.Listen("tcp", uri.Host)
 	if err != nil {
@@ -287,6 +289,34 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, workDir string)
 	errCh := make(chan error)
 	go func() {
 		errCh <- s.Serve(listener)
+	}()
+
+	go func() {
+
+		dataUri := uri.Hostname() + ":" + dataPort
+		srv := &http.Server{Addr: dataUri}
+		mux := http.DefaultServeMux
+		http.DefaultServeMux = http.NewServeMux()
+
+		fs := http.FileServer(http.Dir(workDir))
+		mux.Handle("/routingdata/", http.StripPrefix("/routingdata", fs))
+
+		mux.Handle("/updateroutingdata", r.handleUpdateRoutingData())
+
+		mux.Handle("/api/health", r.handleNodeGraphHealth())
+
+		mux.Handle("/api/graph/fields", r.handleNodeGraphFields())
+
+		mux.Handle("/api/graph/data", r.handleNodeGraphData())
+		srv.Handler = mux
+
+		glog.Infof("starting router data server at %v", dataUri)
+
+		err := srv.ListenAndServe()
+		if err != nil {
+			glog.Fatal(err)
+		}
+
 	}()
 
 	time.Sleep(1 * time.Second)
@@ -342,12 +372,16 @@ func (r *LatencyRouter) Stop() {
 func (r *LatencyRouter) SaveRouting() {
 	//save routing to load on startup
 	file, _ := json.MarshalIndent(r.closestOrchestratorToB, "", " ")
-	err := ioutil.WriteFile(filepath.Join(r.workDir, "routing.json"), file, 0644)
+	r.SaveRoutingJson(file)
+
+	return
+}
+
+func (r *LatencyRouter) SaveRoutingJson(json_data []byte) {
+	err := ioutil.WriteFile(filepath.Join(r.workDir, "routing.json"), json_data, 0644)
 	if err != nil {
 		glog.Errorf("error saving routing: %v", err.Error())
 	}
-
-	return
 }
 
 func (r *LatencyRouter) LoadRouting() {
@@ -500,6 +534,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 			}
 		case <-lctx.Done():
 			//when the context time limit is complete, return the closest orchestrator so far
+			glog.Infof("%v  searchTimeout expired, sending OrchestratorInfo for responses received (%v of %v)", client_addr, totCtr, len(r.orchNodes))
 			return r.SendOrchInfo(ctx, client_info, req, responses)
 		}
 	}
@@ -523,6 +558,8 @@ func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_info ClientInfo
 		}
 	}
 	//none of the Os returns a GetOrchestrator response, return no orchestrators error
+	//   when the router cannot connect to an O the searchTimeout will flush to here and return no orchestrators
+	//   connections to O waits 3 seconds.
 	return nil, errNoOrchestrators
 }
 
@@ -595,8 +632,6 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, client_info Cli
 		return nil, err
 	}
 
-	//new OrchestratorInfo fetched each time a GetOrchestrator request is received
-	//r.SetOrchNodeInfo(client_infob_ip_addr, orch_uri, info)
 	return info, nil
 }
 
@@ -618,6 +653,7 @@ func (r *LatencyRouter) UpdateRouter(ctx context.Context, req *net.ClosestOrches
 	glog.Infof("%v  router updated to provide orchestrator %v", b_uri, o_uri)
 	return &net.ClosestOrchestratorRes{Updated: true}, nil
 }
+
 func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) int64 {
 	pinger, err := probing.NewPinger(b_ip_addr)
 	if err != nil {
@@ -742,4 +778,102 @@ func startLatencyRouterClient(ctx context.Context, router_uri url.URL) (net.Late
 	c := net.NewLatencyCheckClient(conn)
 
 	return c, conn, nil
+}
+
+// reporting
+func (r *LatencyRouter) handleNodeGraphHealth() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(200)
+	})
+}
+
+func (r *LatencyRouter) handleUpdateRoutingData() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		secret := req.Header.Get("Credentials")
+		if secret != r.secret {
+			respond400(w, "bad credentials")
+		}
+
+		routing_data := req.FormValue("routing_data")
+
+		//save routing to load on startup
+		file, _ := json.MarshalIndent(routing_data, "", " ")
+		r.SaveRoutingJson(file)
+
+		respondOk(w, nil)
+	})
+
+}
+
+func (r *LatencyRouter) handleNodeGraphFields() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		type EdgeField struct {
+			FieldName string `json:"field_name"`
+			FieldType string `json:"type"`
+		}
+		type NodeField struct {
+			FieldName  string `json:"field_name"`
+			FieldType  string `json:"type"`
+			FieldColor string `json:"color,omitempty"`
+		}
+		type Fields struct {
+			EdgeFields []EdgeField `json:"edges_fields"`
+			NodeFields []NodeField `json:"nodes_fields"`
+		}
+		fields := Fields{}
+		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "id", FieldType: "string"})
+		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "source", FieldType: "string"})
+		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "target", FieldType: "string"})
+		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "mainStat", FieldType: "number"})
+
+		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "id", FieldType: "string"})
+		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "title", FieldType: "string"})
+		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "mainStat", FieldType: "string"})
+		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "secondaryStat", FieldType: "string"})
+
+		respondJson(w, fields)
+	})
+
+}
+
+func (r *LatencyRouter) handleNodeGraphData() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		type Node struct {
+			Id            string `json:"id"`
+			Title         string `json:"title"`
+			Mainstat      string `json:"mainStat,omitempty"`
+			Secondarystat string `json:"secondaryStat,omitempty"`
+		}
+		type NodeEdge struct {
+			Id            string `json:"id"`
+			Source        string `json:"source"`
+			Target        string `json:"target"`
+			Mainstat      string `json:"mainStat,omitempty"`
+			Secondarystat string `json:"secondaryStat,omitempty"`
+		}
+		type NodeData struct {
+			NodeEdgeData []NodeEdge `json:"edges"`
+			NodeData     []Node     `json:"nodes"`
+		}
+
+		orchs := make(map[string]bool)
+		data := NodeData{}
+
+		edge_id := 1
+		for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
+			new_edge := NodeEdge{Id: strconv.Itoa(edge_id), Source: broadcaster_ip, Target: lat_chk_resp.OrchUri.Host, Mainstat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
+			data.NodeEdgeData = append(data.NodeEdgeData, new_edge)
+			edge_id++
+
+			new_node := Node{Id: broadcaster_ip, Title: broadcaster_ip, Mainstat: lat_chk_resp.UpdatedAt.Format("2006-01-02 15:04:05"), Secondarystat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
+			orchs[lat_chk_resp.OrchUri.Host] = true
+			data.NodeData = append(data.NodeData, new_node)
+		}
+		for orch, _ := range orchs {
+			new_node := Node{Id: orch, Title: orch}
+			data.NodeData = append(data.NodeData, new_node)
+		}
+
+		respondJson(w, data)
+	})
 }
