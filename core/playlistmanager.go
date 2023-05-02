@@ -270,8 +270,6 @@ func (mgr *BasicPlaylistManager) MakeNewRenditionOverwriteQueue(profileName stri
 	mgr.mediaListWriteQueue[profileName] = drivers.NewOverwriteQueue(mgr.recordSession, fmt.Sprintf("%s/index.m3u8", profileName),
 		fmt.Sprintf("m3u8 playlist for manifestId=%s, profile=%s", mgr.manifestID, profileName),
 		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
-
-	//TODO: msess3.SaveData(context.TODO(), "testNode/playlist_3.json", bytes.NewReader(bjpl), nil, 0)
 }
 
 func (mgr *BasicPlaylistManager) ManifestID() ManifestID {
