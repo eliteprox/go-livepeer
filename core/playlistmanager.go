@@ -37,6 +37,8 @@ type PlaylistManager interface {
 
 	GetHLSMasterPlaylist() *m3u8.MasterPlaylist
 
+	GetHLSMasterPlaylistRec() *m3u8.MasterPlaylist
+
 	GetHLSMediaPlaylist(rendition string) *m3u8.MediaPlaylist
 
 	GetOSSession() drivers.OSSession
@@ -53,12 +55,16 @@ type BasicPlaylistManager struct {
 	recordSession  drivers.OSSession
 	manifestID     ManifestID
 	// Live playlist used for broadcasting
-	masterPList        *m3u8.MasterPlaylist
-	mediaLists         map[string]*m3u8.MediaPlaylist
-	mapSync            *sync.RWMutex
-	jsonList           *JsonPlaylist
-	jsonListWriteQueue *drivers.OverwriteQueue
-	jsonListSync       *sync.Mutex
+	masterPList           *m3u8.MasterPlaylist
+	masterPListRec        *m3u8.MasterPlaylist
+	mediaLists            map[string]*m3u8.MediaPlaylist
+	mediaListsRec         map[string]*m3u8.MediaPlaylist
+	mapSync               *sync.RWMutex
+	jsonList              *JsonPlaylist
+	jsonListWriteQueue    *drivers.OverwriteQueue
+	masterPListWriteQueue *drivers.OverwriteQueue
+	mediaListWriteQueue   map[string]*drivers.OverwriteQueue
+	jsonListSync          *sync.Mutex
 }
 
 type jsonSeg struct {
@@ -223,12 +229,15 @@ func NewBasicPlaylistManager(manifestID ManifestID,
 	storageSession, recordSession drivers.OSSession) *BasicPlaylistManager {
 
 	bplm := &BasicPlaylistManager{
-		storageSession: storageSession,
-		recordSession:  recordSession,
-		manifestID:     manifestID,
-		masterPList:    m3u8.NewMasterPlaylist(),
-		mediaLists:     make(map[string]*m3u8.MediaPlaylist),
-		mapSync:        &sync.RWMutex{},
+		storageSession:      storageSession,
+		recordSession:       recordSession,
+		manifestID:          manifestID,
+		masterPList:         m3u8.NewMasterPlaylist(),
+		masterPListRec:      m3u8.NewMasterPlaylist(),
+		mediaLists:          make(map[string]*m3u8.MediaPlaylist),
+		mediaListsRec:       make(map[string]*m3u8.MediaPlaylist),
+		mapSync:             &sync.RWMutex{},
+		mediaListWriteQueue: make(map[string]*drivers.OverwriteQueue),
 	}
 	if recordSession != nil {
 		bplm.jsonList = NewJSONPlaylist()
@@ -242,9 +251,27 @@ func (mgr *BasicPlaylistManager) makeNewOverwriteQueue() {
 	if mgr.jsonListWriteQueue != nil {
 		mgr.jsonListWriteQueue.StopAfter(JsonPlaylistQuitTimeout)
 	}
+
+	if mgr.masterPListWriteQueue != nil {
+		mgr.masterPListWriteQueue.StopAfter(JsonPlaylistQuitTimeout)
+	}
+
 	mgr.jsonListWriteQueue = drivers.NewOverwriteQueue(mgr.recordSession, mgr.jsonList.name,
 		fmt.Sprintf("json playlist for manifestId=%s", mgr.manifestID),
 		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
+
+	mgr.masterPListWriteQueue = drivers.NewOverwriteQueue(mgr.recordSession, fmt.Sprintf("%s.m3u8", mgr.manifestID),
+		fmt.Sprintf("m3u8 playlist for manifestId=%s", mgr.manifestID),
+		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
+}
+
+//Creates an overwrite queue for uploading an m3u8 for each rendition
+func (mgr *BasicPlaylistManager) MakeNewRenditionOverwriteQueue(profileName string) {
+	mgr.mediaListWriteQueue[profileName] = drivers.NewOverwriteQueue(mgr.recordSession, fmt.Sprintf("%s/index.m3u8", profileName),
+		fmt.Sprintf("m3u8 playlist for manifestId=%s, profile=%s", mgr.manifestID, profileName),
+		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
+
+	//TODO: msess3.SaveData(context.TODO(), "testNode/playlist_3.json", bytes.NewReader(bjpl), nil, 0)
 }
 
 func (mgr *BasicPlaylistManager) ManifestID() ManifestID {
@@ -257,6 +284,13 @@ func (mgr *BasicPlaylistManager) Cleanup() {
 	}
 	if mgr.jsonListWriteQueue != nil {
 		mgr.jsonListWriteQueue.StopAfter(JsonPlaylistQuitTimeout)
+	}
+	if mgr.masterPListWriteQueue != nil {
+		mgr.masterPListWriteQueue.StopAfter(JsonPlaylistQuitTimeout)
+	}
+
+	for _, element := range mgr.mediaListWriteQueue {
+		element.StopAfter(JsonPlaylistQuitTimeout)
 	}
 }
 
@@ -278,8 +312,11 @@ func (mgr *BasicPlaylistManager) FlushRecord() {
 			return
 		}
 		go mgr.jsonListWriteQueue.Save(b)
+		go mgr.masterPListWriteQueue.Save(mgr.GetHLSMasterPlaylistRec().Encode().Bytes())
+
 		if mgr.jsonList.DurationMs > jsonPlaylistRotationInterval {
 			mgr.jsonList = NewJSONPlaylist()
+			mgr.masterPList = m3u8.NewMasterPlaylist()
 			mgr.makeNewOverwriteQueue()
 		}
 	}
@@ -307,6 +344,38 @@ func (mgr *BasicPlaylistManager) getOrCreatePL(profile *ffmpeg.VideoProfile) (*m
 	vParams := ffmpeg.VideoProfileToVariantParams(*profile)
 	url := fmt.Sprintf("%v/%v.m3u8", mgr.manifestID, profile.Name)
 	mgr.masterPList.Append(url, mpl, vParams)
+
+	return mpl, nil
+}
+
+func (mgr *BasicPlaylistManager) getOrCreatePLRecording(profile *ffmpeg.VideoProfile) (*m3u8.MediaPlaylist, error) {
+	mgr.mapSync.Lock()
+	defer mgr.mapSync.Unlock()
+	if pl, ok := mgr.mediaListsRec[profile.Name]; ok {
+		return pl, nil
+	}
+	mpl, err := m3u8.NewMediaPlaylist(LIVE_LIST_LENGTH, LIVE_LIST_LENGTH)
+	if err != nil {
+		glog.Error(err)
+		return nil, err
+	}
+	mgr.mediaListsRec[profile.Name] = mpl
+
+	vParams := ffmpeg.VideoProfileToVariantParams(*profile)
+	url := fmt.Sprintf("%v/%v.m3u8", profile.Name, "index")
+	mgr.masterPListRec.Append(url, mpl, vParams)
+
+	//Create overwrite profiles for all media lists
+	if mgr.mediaListWriteQueue[profile.Name] != nil {
+		mgr.mediaListWriteQueue[profile.Name].StopAfter(JsonPlaylistQuitTimeout)
+	}
+
+	mgr.mediaListWriteQueue[profile.Name] = drivers.NewOverwriteQueue(mgr.recordSession, fmt.Sprintf("%s/index.m3u8", profile.Name),
+		fmt.Sprintf("m3u8 playlist for manifestId=%s, profile=%s", mgr.manifestID, profile.Name),
+		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
+
+	glog.Info("Things are happening: " + profile.Name)
+
 	return mpl, nil
 }
 
@@ -318,6 +387,21 @@ func (mgr *BasicPlaylistManager) InsertHLSSegmentJSON(profile *ffmpeg.VideoProfi
 		mgr.jsonList.InsertHLSSegment(profile, seqNo, uri, duration)
 		mgr.jsonListSync.Unlock()
 	}
+
+	mpl, _ := mgr.getOrCreatePLRecording(profile)
+	mseg := newMediaSegment(uri, duration)
+	if mpl.Count() >= mpl.WinSize() {
+		mpl.Remove()
+	}
+	if mpl.Count() == 0 {
+		mpl.SeqNo = mseg.SeqId
+	}
+
+	mpl.InsertSegment(seqNo, mseg)
+
+	//Save the m3u8 inside the rendition folder
+	mgr.mediaListWriteQueue[profile.Name].Save(mgr.mediaListsRec[profile.Name].Encode().Bytes())
+
 }
 
 func (mgr *BasicPlaylistManager) InsertHLSSegment(profile *ffmpeg.VideoProfile, seqNo uint64, uri string,
@@ -341,6 +425,10 @@ func (mgr *BasicPlaylistManager) InsertHLSSegment(profile *ffmpeg.VideoProfile, 
 // GetHLSMasterPlaylist ..
 func (mgr *BasicPlaylistManager) GetHLSMasterPlaylist() *m3u8.MasterPlaylist {
 	return mgr.masterPList
+}
+
+func (mgr *BasicPlaylistManager) GetHLSMasterPlaylistRec() *m3u8.MasterPlaylist {
+	return mgr.masterPListRec
 }
 
 // GetHLSMediaPlaylist ...

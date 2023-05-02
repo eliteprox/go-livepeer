@@ -838,6 +838,7 @@ func processSegment(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSeg
 					name, len(seg.Data), err)
 			} else {
 				cpl.InsertHLSSegmentJSON(vProfile, seg.SeqNo, uri, seg.Duration)
+				//cpl.InsertHLSSegmentRec(vProfile, seg.SeqNo, uri, seg.Duration)
 				clog.Infof(ctx, "Successfully saved name=%s bytes=%d to record store took=%s",
 					name, len(seg.Data), took)
 				cpl.FlushRecord()
@@ -1277,6 +1278,7 @@ func downloadResults(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSe
 					clog.Errorf(ctx, "Error saving nonce=%d manifestID=%s name=%s to record store err=%q", nonce, cxn.mid, name, err)
 				} else {
 					cpl.InsertHLSSegmentJSON(&profile, seg.SeqNo, uri, seg.Duration)
+					//cpl.InsertHLSSegmentRec(&profile, seg.SeqNo, uri, seg.Duration)
 					clog.Infof(ctx, "Successfully saved nonce=%d manifestID=%s name=%s size=%d bytes to record store took=%s",
 						nonce, cxn.mid, name, len(data), took)
 				}

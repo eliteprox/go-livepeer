@@ -232,6 +232,10 @@ func (pm *stubPlaylistManager) GetHLSMasterPlaylist() *m3u8.MasterPlaylist {
 	return nil
 }
 
+func (pm *stubPlaylistManager) GetHLSMasterPlaylistRec() *m3u8.MasterPlaylist {
+	return nil
+}
+
 func (pm *stubPlaylistManager) GetHLSMediaPlaylist(rendition string) *m3u8.MediaPlaylist {
 	return nil
 }
