@@ -260,7 +260,7 @@ func (mgr *BasicPlaylistManager) makeNewOverwriteQueue() {
 		fmt.Sprintf("json playlist for manifestId=%s", mgr.manifestID),
 		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
 
-	mgr.masterPListWriteQueue = drivers.NewOverwriteQueue(mgr.recordSession, fmt.Sprintf("%s.m3u8", mgr.manifestID),
+	mgr.masterPListWriteQueue = drivers.NewOverwriteQueue(mgr.recordSession, "index.m3u8",
 		fmt.Sprintf("m3u8 playlist for manifestId=%s", mgr.manifestID),
 		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
 }
@@ -278,6 +278,29 @@ func (mgr *BasicPlaylistManager) ManifestID() ManifestID {
 
 func (mgr *BasicPlaylistManager) Cleanup() {
 	if mgr.storageSession != nil {
+		mediaLists := make(map[string]*m3u8.MediaPlaylist)
+		for _, track := range mgr.jsonList.Tracks {
+			segments := mgr.jsonList.Segments[track.Name]
+			mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
+			if err != nil {
+				glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
+				return
+			}
+
+			for _, segment := range segments {
+				mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs)))
+			}
+
+			mpl.Live = false
+			mediaLists[track.Name] = mpl
+
+			//Save the full m3u8 renditions
+			mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
+			glog.Infof("Successfully finalized %s", track.Name)
+		}
+		for _, element := range mgr.mediaListWriteQueue {
+			element.StopAfter(JsonPlaylistQuitTimeout * 2)
+		}
 		mgr.storageSession.EndSession()
 	}
 	if mgr.jsonListWriteQueue != nil {
@@ -286,9 +309,30 @@ func (mgr *BasicPlaylistManager) Cleanup() {
 	if mgr.masterPListWriteQueue != nil {
 		mgr.masterPListWriteQueue.StopAfter(JsonPlaylistQuitTimeout)
 	}
+}
 
-	for _, element := range mgr.mediaListWriteQueue {
-		element.StopAfter(JsonPlaylistQuitTimeout)
+func (mgr *BasicPlaylistManager) SaveFullStream() {
+	mgr.jsonListSync.Lock()
+	defer mgr.jsonListSync.Unlock()
+	mediaLists := make(map[string]*m3u8.MediaPlaylist)
+	for _, track := range mgr.jsonList.Tracks {
+		segments := mgr.jsonList.Segments[track.Name]
+		mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
+		if err != nil {
+			glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
+			return
+		}
+
+		for _, segment := range segments {
+			mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs)))
+		}
+
+		mpl.Live = false
+		mediaLists[track.Name] = mpl
+
+		//Save the full m3u8 renditions
+		mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
+		glog.Infof("Successfully finalized %s", track.Name)
 	}
 }
 
@@ -366,13 +410,11 @@ func (mgr *BasicPlaylistManager) getOrCreatePLRecording(profile *ffmpeg.VideoPro
 	//Create overwrite profiles for all media lists
 	if mgr.mediaListWriteQueue[profile.Name] != nil {
 		mgr.mediaListWriteQueue[profile.Name].StopAfter(JsonPlaylistQuitTimeout)
+	} else {
+		mgr.mediaListWriteQueue[profile.Name] = drivers.NewOverwriteQueue(mgr.recordSession, fmt.Sprintf("%s/index.m3u8", profile.Name),
+			fmt.Sprintf("m3u8 playlist for manifestId=%s, profile=%s", mgr.manifestID, profile.Name),
+			jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
 	}
-
-	mgr.mediaListWriteQueue[profile.Name] = drivers.NewOverwriteQueue(mgr.recordSession, fmt.Sprintf("%s/index.m3u8", profile.Name),
-		fmt.Sprintf("m3u8 playlist for manifestId=%s, profile=%s", mgr.manifestID, profile.Name),
-		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
-
-	glog.Info("Things are happening: " + profile.Name)
 
 	return mpl, nil
 }
