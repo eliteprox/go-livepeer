@@ -145,6 +145,9 @@ func (s *MinLSSelector) Select(ctx context.Context) *BroadcastSession {
 		return s.selectUnknownSession(ctx)
 	}
 
+	//broadcaster introspection
+	session := sess.(*BroadcastSession)
+	glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "performance, known session", ethcommon.Bytes2Hex(session.OrchestratorInfo.TicketParams.Recipient), session.Params.ManifestID, session.PMSessionID, session.OrchestratorInfo.Transcoder)
 	return heap.Pop(s.knownSessions).(*BroadcastSession)
 }
 
@@ -178,6 +181,8 @@ func (s *MinLSSelector) selectUnknownSession(ctx context.Context) *BroadcastSess
 		i := rand.Intn(len(s.unknownSessions))
 		sess := s.unknownSessions[i]
 		s.removeUnknownSession(i)
+		//broadcaster introspection
+		glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "random", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.PMSessionID, sess.OrchestratorInfo.Transcoder)
 		return sess
 	}
 
@@ -232,6 +237,8 @@ func (s *MinLSSelector) selectUnknownSession(ctx context.Context) *BroadcastSess
 		stakes[addr] = 0
 
 		if r <= 0 {
+			//broadcaster introspection
+			glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "stake weight", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.PMSessionID, sess.OrchestratorInfo.Transcoder)
 			s.removeUnknownSession(i)
 			return sess
 		}
