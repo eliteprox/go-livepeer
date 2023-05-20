@@ -6,6 +6,7 @@ import (
 	"math/rand"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/common"
 )
@@ -188,6 +189,7 @@ func (s *MinLSSelector) selectUnknownSession(ctx context.Context) *BroadcastSess
 		}
 		addr := ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient)
 		if _, ok := addrCount[addr]; !ok {
+			glog.Info("Selected orch randomly %s", addr)
 			addrs = append(addrs, addr)
 		}
 		addrCount[addr]++
