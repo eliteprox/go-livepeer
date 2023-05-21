@@ -1,19 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
-	gonet "net"
-	"os"
-	"strconv"
-
-	"encoding/json"
+	"io"
 	"io/ioutil"
+	gonet "net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -292,27 +296,33 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 	}()
 
 	go func() {
+		dataURI := &url.URL{
+			Scheme: serviceURI.Scheme,
+			Host:   serviceURI.Hostname() + ":" + dataPort,
+			Path:   serviceURI.Path,
+		}
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12, // Minimum TLS version supported
+			// You can further configure TLS settings here if needed
+		}
 
-		dataUri := uri.Hostname() + ":" + dataPort
-		srv := &http.Server{Addr: dataUri}
+		srv := &http.Server{Addr: dataURI.Host, TLSConfig: tlsConfig}
 		mux := http.DefaultServeMux
 		http.DefaultServeMux = http.NewServeMux()
 
-		fs := http.FileServer(http.Dir(workDir))
-		mux.Handle("/routingdata/", http.StripPrefix("/routingdata", fs))
+		mux.Handle("/routingdata/", r.basicAuth(r.handleGetRoutingData))
 
-		mux.Handle("/updateroutingdata", r.handleUpdateRoutingData())
+		mux.Handle("/updateroutingdata", r.basicAuth(r.handleUpdateRoutingData))
 
-		mux.Handle("/api/health", r.handleNodeGraphHealth())
+		mux.Handle("/api/health", r.basicAuth(r.handleNodeGraphHealth))
 
-		mux.Handle("/api/graph/fields", r.handleNodeGraphFields())
+		mux.Handle("/api/graph/fields", r.basicAuth(r.handleNodeGraphFields))
 
-		mux.Handle("/api/graph/data", r.handleNodeGraphData())
+		mux.Handle("/api/graph/data", r.basicAuth(r.handleNodeGraphData))
 		srv.Handler = mux
 
-		glog.Infof("starting router data server at %v", dataUri)
-
-		err := srv.ListenAndServe()
+		glog.Infof("started router data server at %v", dataURI)
+		err = srv.ListenAndServeTLS(certFile, keyFile)
 		if err != nil {
 			glog.Fatal(err)
 		}
@@ -385,6 +395,8 @@ func (r *LatencyRouter) SaveRouting() {
 }
 
 func (r *LatencyRouter) SaveRoutingJson(json_data []byte) {
+	r.bmu.Lock()
+	defer r.bmu.Unlock()
 	err := ioutil.WriteFile(filepath.Join(r.workDir, "routing.json"), json_data, 0644)
 	if err != nil {
 		glog.Errorf("error saving routing: %v", err.Error())
@@ -392,6 +404,8 @@ func (r *LatencyRouter) SaveRoutingJson(json_data []byte) {
 }
 
 func (r *LatencyRouter) LoadRouting() {
+	r.bmu.Lock()
+	defer r.bmu.Unlock()
 	routing_file := filepath.Join(r.workDir, "routing.json")
 	if _, err := os.Stat(routing_file); err == nil {
 		json_file, err := ioutil.ReadFile(routing_file)
@@ -498,7 +512,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 				return
 			}
 			glog.Infof("%v  sending latency check request to orch at %v", b_info.addr, orch_node.routerUri.String())
-			latencyCheckRes, err := client.GetLatency(lctx, &net.BroadcasterLatencyReq{Uri: b_info.ip})
+			latencyCheckRes, err := client.GetLatency(lctx, &net.BroadcasterLatencyReq{Uri: b_info.addr})
 			if err != nil {
 				errCh <- fmt.Errorf("%v err=%q", orch_node.routerUri, err)
 				return
@@ -607,12 +621,15 @@ func (r *LatencyRouter) GetClosestOrchestrator(b_ip_addr ClientInfo) (LatencyChe
 }
 
 func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr ClientInfo, resp *LatencyCheckResponse) {
+	if resp.RespTime == 0 {
+		resp.DoNotUpdate = true
+	}
+
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
 	//cache the fastest O to the B
 	r.closestOrchestratorToB[b_ip_addr.ip] = *resp
 
-	return
 }
 
 func (r *LatencyRouter) PingOrchestrator(ctx context.Context, broadcaster_ip string, orch_uri url.URL) (bool, error) {
@@ -659,7 +676,7 @@ func (r *LatencyRouter) MonitorBroadcasters() {
 	for {
 		time.Sleep(1 * time.Minute)
 		for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
-			if lat_chk_resp.UpdatedAt.Add(r.cacheTime).Before(time.Now().Add(10 * time.Minute)) {
+			if lat_chk_resp.DoNotUpdate == false && lat_chk_resp.UpdatedAt.Add(r.cacheTime).Before(time.Now().Add(10*time.Minute)) {
 				glog.Infof("%v  updating ping times for broadcaster ip that will expire in %s", broadcaster_ip, lat_chk_resp.UpdatedAt.Add(r.cacheTime).Sub(time.Now()))
 				go r.getOrchestratorInfoClosestToB(context.Background(), nil, broadcaster_ip+":80") //add port so can parse ip addr
 			}
@@ -687,7 +704,10 @@ func (r *LatencyRouter) UpdateRouter(ctx context.Context, req *net.ClosestOrches
 }
 
 func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) int64 {
-	pinger, err := probing.NewPinger(b_ip_addr)
+
+	addr_split := strings.Split(b_ip_addr, ":")
+
+	pinger, err := probing.NewPinger(addr_split[0])
 	if err != nil {
 		panic(err)
 	}
@@ -701,11 +721,32 @@ func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) int64 {
 		panic(p_err)
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
-	glog.Infof("%v  ping test results:  %vms  %vperc packet loss", b_ip_addr, stats.AvgRtt.Milliseconds(), stats.PacketLoss)
-	return stats.AvgRtt.Milliseconds()
+	glog.Infof("%v  ping test results:  %vms  %v%% packet loss", b_ip_addr, stats.AvgRtt.Milliseconds(), stats.PacketLoss)
+	if stats.PacketLoss != 100 {
+		return stats.AvgRtt.Milliseconds()
+	} else {
+		start := time.Now()
+		took := int64(0)
+		client := http.Client{
+			Timeout: r.pingBroadcasterTimeout,
+		}
+		resp, err := client.Head("https://" + addr_split[0] + ":8935")
+		if err != nil {
+			took = time.Since(start).Milliseconds()
+		} else {
+			defer resp.Body.Close()
+			took = time.Since(start).Milliseconds()
+		}
+		glog.Infof("%v  icmp ping failed, using backup ping test results:  %vms  error: %s", b_ip_addr, took, err.Error())
+		return time.Since(start).Milliseconds()
+	}
 }
 
 func (r *LatencyRouter) updateRouters(b_ip_addr string, resp *LatencyCheckResponse) {
+	//do not update if RespTime is 0 because the ping failed
+	if resp.RespTime == 0 {
+		return
+	}
 	updateCh := make(chan RouterUpdated, len(r.orchNodes))
 	errCh := make(chan error, len(r.orchNodes))
 
@@ -812,100 +853,141 @@ func startLatencyRouterClient(ctx context.Context, router_uri url.URL) (net.Late
 	return c, conn, nil
 }
 
-// reporting
-func (r *LatencyRouter) handleNodeGraphHealth() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.WriteHeader(200)
-	})
+// update and reporting endpoints
+// ===========================================================================================
+func (r *LatencyRouter) handleGetRoutingData(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Disposition", "attachment; filename=routing.json")
+	w.Header().Set("Content-Type", req.Header.Get("Content-Type"))
+
+	if reader, err := os.Open(filepath.Join(r.workDir, "routing.json")); err == nil {
+		defer reader.Close()
+		io.Copy(w, reader)
+	} else {
+		respond500(w, "file not available")
+	}
 }
 
-func (r *LatencyRouter) handleUpdateRoutingData() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		secret := req.Header.Get("Credentials")
-		if secret != r.secret {
-			respond400(w, "bad credentials")
-		}
+func (r *LatencyRouter) handleUpdateRoutingData(w http.ResponseWriter, req *http.Request) {
+	// Check if the request method is POST
+	if req.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Parse the incoming file from the request
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
 
-		routing_data := req.FormValue("routing_data")
+	glog.Infof("received json data %v : %v", header.Filename, header.Size)
+	buf := bytes.NewBuffer(nil)
+	if _, err := io.Copy(buf, file); err != nil {
+		respond400(w, "could not read json file")
+	}
 
-		//save routing to load on startup
-		file, _ := json.MarshalIndent(routing_data, "", " ")
-		r.SaveRoutingJson(file)
+	//save routing to load on startup
+	//json_data, _ := json.MarshalIndent(buf, "", " ")
+	r.SaveRoutingJson(buf.Bytes())
+	r.LoadRouting()
+	glog.Infof("routing data saved from webserver")
+	respondOk(w, nil)
+}
 
-		respondOk(w, nil)
-	})
+func (r *LatencyRouter) handleNodeGraphHealth(w http.ResponseWriter, req *http.Request) {
+	w.WriteHeader(200)
+}
+
+func (r *LatencyRouter) handleNodeGraphFields(w http.ResponseWriter, req *http.Request) {
+	type EdgeField struct {
+		FieldName string `json:"field_name"`
+		FieldType string `json:"type"`
+	}
+	type NodeField struct {
+		FieldName  string `json:"field_name"`
+		FieldType  string `json:"type"`
+		FieldColor string `json:"color,omitempty"`
+	}
+	type Fields struct {
+		EdgeFields []EdgeField `json:"edges_fields"`
+		NodeFields []NodeField `json:"nodes_fields"`
+	}
+	fields := Fields{}
+	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "id", FieldType: "string"})
+	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "source", FieldType: "string"})
+	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "target", FieldType: "string"})
+	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "mainStat", FieldType: "number"})
+
+	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "id", FieldType: "string"})
+	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "title", FieldType: "string"})
+	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "mainStat", FieldType: "string"})
+	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "secondaryStat", FieldType: "string"})
+
+	respondJson(w, fields)
 
 }
 
-func (r *LatencyRouter) handleNodeGraphFields() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		type EdgeField struct {
-			FieldName string `json:"field_name"`
-			FieldType string `json:"type"`
-		}
-		type NodeField struct {
-			FieldName  string `json:"field_name"`
-			FieldType  string `json:"type"`
-			FieldColor string `json:"color,omitempty"`
-		}
-		type Fields struct {
-			EdgeFields []EdgeField `json:"edges_fields"`
-			NodeFields []NodeField `json:"nodes_fields"`
-		}
-		fields := Fields{}
-		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "id", FieldType: "string"})
-		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "source", FieldType: "string"})
-		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "target", FieldType: "string"})
-		fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "mainStat", FieldType: "number"})
+func (r *LatencyRouter) handleNodeGraphData(w http.ResponseWriter, req *http.Request) {
 
-		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "id", FieldType: "string"})
-		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "title", FieldType: "string"})
-		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "mainStat", FieldType: "string"})
-		fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "secondaryStat", FieldType: "string"})
+	type Node struct {
+		Id            string `json:"id"`
+		Title         string `json:"title"`
+		Mainstat      string `json:"mainStat,omitempty"`
+		Secondarystat string `json:"secondaryStat,omitempty"`
+	}
+	type NodeEdge struct {
+		Id            string `json:"id"`
+		Source        string `json:"source"`
+		Target        string `json:"target"`
+		Mainstat      string `json:"mainStat,omitempty"`
+		Secondarystat string `json:"secondaryStat,omitempty"`
+	}
+	type NodeData struct {
+		NodeEdgeData []NodeEdge `json:"edges"`
+		NodeData     []Node     `json:"nodes"`
+	}
 
-		respondJson(w, fields)
-	})
+	orchs := make(map[string]bool)
+	data := NodeData{}
 
+	edge_id := 1
+	for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
+		new_edge := NodeEdge{Id: strconv.Itoa(edge_id), Source: broadcaster_ip, Target: lat_chk_resp.OrchUri.Host, Mainstat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
+		data.NodeEdgeData = append(data.NodeEdgeData, new_edge)
+		edge_id++
+
+		new_node := Node{Id: broadcaster_ip, Title: broadcaster_ip, Mainstat: lat_chk_resp.UpdatedAt.Format("2006-01-02 15:04:05"), Secondarystat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
+		orchs[lat_chk_resp.OrchUri.Host] = true
+		data.NodeData = append(data.NodeData, new_node)
+	}
+	for orch, _ := range orchs {
+		new_node := Node{Id: orch, Title: orch}
+		data.NodeData = append(data.NodeData, new_node)
+	}
+
+	respondJson(w, data)
 }
 
-func (r *LatencyRouter) handleNodeGraphData() http.Handler {
+func (r *LatencyRouter) basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		type Node struct {
-			Id            string `json:"id"`
-			Title         string `json:"title"`
-			Mainstat      string `json:"mainStat,omitempty"`
-			Secondarystat string `json:"secondaryStat,omitempty"`
-		}
-		type NodeEdge struct {
-			Id            string `json:"id"`
-			Source        string `json:"source"`
-			Target        string `json:"target"`
-			Mainstat      string `json:"mainStat,omitempty"`
-			Secondarystat string `json:"secondaryStat,omitempty"`
-		}
-		type NodeData struct {
-			NodeEdgeData []NodeEdge `json:"edges"`
-			NodeData     []Node     `json:"nodes"`
+		username, password, ok := req.BasicAuth()
+		if ok {
+			usernameHash := sha256.Sum256([]byte(username))
+			passwordHash := sha256.Sum256([]byte(password))
+			expectedUsernameHash := sha256.Sum256([]byte("routeradmin"))
+			expectedPasswordHash := sha256.Sum256([]byte(r.secret))
+
+			usernameMatch := (subtle.ConstantTimeCompare(usernameHash[:], expectedUsernameHash[:]) == 1)
+			passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:]) == 1)
+
+			if usernameMatch && passwordMatch {
+				next.ServeHTTP(w, req)
+				return
+			}
 		}
 
-		orchs := make(map[string]bool)
-		data := NodeData{}
-
-		edge_id := 1
-		for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
-			new_edge := NodeEdge{Id: strconv.Itoa(edge_id), Source: broadcaster_ip, Target: lat_chk_resp.OrchUri.Host, Mainstat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
-			data.NodeEdgeData = append(data.NodeEdgeData, new_edge)
-			edge_id++
-
-			new_node := Node{Id: broadcaster_ip, Title: broadcaster_ip, Mainstat: lat_chk_resp.UpdatedAt.Format("2006-01-02 15:04:05"), Secondarystat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
-			orchs[lat_chk_resp.OrchUri.Host] = true
-			data.NodeData = append(data.NodeData, new_node)
-		}
-		for orch, _ := range orchs {
-			new_node := Node{Id: orch, Title: orch}
-			data.NodeData = append(data.NodeData, new_node)
-		}
-
-		respondJson(w, data)
+		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	})
 }

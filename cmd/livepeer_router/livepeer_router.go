@@ -84,14 +84,14 @@ func main() {
 		glog.Fatalf("Could not parse -httpAddr: %v", err)
 	}
 
-	dPort := ""
+	dPort := "8080"
 	if *dataPort == "" {
 		sPort, err := strconv.Atoi(serviceURI.Port())
 		if err == nil {
 			dPort = strconv.Itoa(sPort + 1)
-		} else {
-			dPort = *dataPort
 		}
+	} else {
+		dPort = *dataPort
 	}
 
 	var uris []*url.URL
