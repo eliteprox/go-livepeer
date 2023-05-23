@@ -177,7 +177,7 @@ func (sp *SessionPool) refreshSessions(ctx context.Context) {
 		uniqueSessions = append(uniqueSessions, sess)
 		sp.sessMap[sess.OrchestratorInfo.Transcoder] = sess
 
-		glog.Infof("assigned broadcast session to orchestrator %w", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient))
+		glog.Infof("assigned broadcast session to orchestrator %v", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex())
 	}
 
 	sp.sel.Add(uniqueSessions)
@@ -439,13 +439,15 @@ func NewSessionManager(ctx context.Context, node *core.LivepeerNode, params *cor
 
 func (bsm *BroadcastSessionsManager) suspendAndRemoveOrch(sess *BroadcastSession) {
 	if sess.OrchestratorScore == common.Score_Untrusted {
-		glog.Infof("suspendAndRemoveOrch: Removed orchestrator from the untrusted pool %w", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient))
 		bsm.untrustedPool.suspend(sess.OrchestratorInfo.GetTranscoder())
 		bsm.untrustedPool.removeSession(sess)
+		//glog.Infof("Removed orchestrator from the untrusted pool %v", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex())
 	} else {
-		glog.Infof("suspendAndRemoveOrch: Removed orchestrator from trusted pool %w", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient))
 		bsm.trustedPool.suspend(sess.OrchestratorInfo.GetTranscoder())
 		bsm.trustedPool.removeSession(sess)
+
+		glog.Infof("Removing orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "variousreason", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex(), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
+		//glog.Infof("Removed orchestrator from trusted pool %v", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex())
 	}
 }
 
@@ -638,8 +640,8 @@ func (bsm *BroadcastSessionsManager) chooseResults(ctx context.Context, seg *str
 			}
 			// suspend sessions which returned incorrect results
 			for _, s := range sessionsToSuspend {
-				glog.Info("suspended orchestrator due to incorrect results %s", ethcommon.BytesToAddress(s.OrchestratorInfo.TicketParams.Recipient))
 				bsm.suspendAndRemoveOrch(s)
+				glog.Info("suspended orchestrator due to incorrect results %s", ethcommon.BytesToAddress(s.OrchestratorInfo.TicketParams.Recipient))
 			}
 			return untrustedResult.Session, untrustedResult.TranscodeResult, untrustedResult.Err
 		} else {
@@ -679,8 +681,9 @@ func (bsm *BroadcastSessionsManager) collectResults(submitResultsCh chan *Submit
 			if isNonRetryableError(err) {
 				bsm.completeSession(context.TODO(), res.Session, false)
 			} else {
-				glog.Info("suspended orchestrator %s", ethcommon.BytesToAddress(res.Session.OrchestratorInfo.TicketParams.Recipient))
 				bsm.suspendAndRemoveOrch(res.Session)
+				glog.Info("suspended orchestrator %s", ethcommon.BytesToAddress(res.Session.OrchestratorInfo.TicketParams.Recipient))
+
 			}
 		}
 	}
@@ -1027,8 +1030,6 @@ func transcodeSegment(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSS
 				cxn.sessManager.completeSession(ctx, sess, false)
 				return nil, info, err
 			}
-
-			glog.Infof("transcodeSegment: removed orchestrator due to transcode latency %w", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient))
 			cxn.sessManager.suspendAndRemoveOrch(sess)
 			if res == nil && err == nil {
 				err = errors.New("empty response")
@@ -1202,9 +1203,8 @@ func prepareForTranscoding(ctx context.Context, cxn *rtmpConnection, sess *Broad
 	refresh, err := shouldRefreshSession(ctx, sess)
 	if err != nil {
 		clog.Errorf(ctx, "Error checking whether to refresh session manifestID=%s orch=%v err=%q", cxn.mid, sess.Transcoder(), err)
-		clog.Infof(ctx, "suspended orchestrator while trying to refresh manifestID=%s orch=%v err=%q", cxn.mid, sess.Transcoder(), err)
-
 		cxn.sessManager.suspendAndRemoveOrch(sess)
+		clog.Infof(ctx, "Suspended orchestrator while trying to refresh manifestID=%s orch=%v err=%q", cxn.mid, sess.Transcoder(), err)
 		return nil, err
 	}
 
@@ -1213,6 +1213,7 @@ func prepareForTranscoding(ctx context.Context, cxn *rtmpConnection, sess *Broad
 		if err != nil {
 			clog.Errorf(ctx, "Error refreshing session manifestID=%s orch=%v err=%q", cxn.mid, sess.Transcoder(), err)
 			cxn.sessManager.suspendAndRemoveOrch(sess)
+			clog.Infof(ctx, "Suspended orchestrator while trying to refresh manifestID=%s orch=%v err=%q", cxn.mid, sess.Transcoder(), err)
 			return nil, err
 		}
 	}
@@ -1269,8 +1270,8 @@ func downloadResults(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSe
 				segLock.Lock()
 				dlErr = err
 				segLock.Unlock()
-				glog.Infof("suspended orchestrator due to unable to download segments")
 				cxn.sessManager.suspendAndRemoveOrch(sess)
+				glog.Infof("Removing orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "error downloading segments", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex(), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
 				return
 			}
 
