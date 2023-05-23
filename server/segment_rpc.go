@@ -518,7 +518,9 @@ func SubmitSegment(ctx context.Context, sess *BroadcastSession, seg *stream.HLSS
 		if monitor.Enabled {
 			monitor.SegmentUploadFailed(ctx, nonce, seg.SeqNo, monitor.SegmentUploadErrorUnknown, err, false, sess.OrchestratorInfo.Transcoder)
 		}
-		glog.Infof("Removing orchestrator reason=%v, ethaddress=%v", "upload timeout", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex())
+
+		glog.Infof("Removing orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "incorrect results", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex(), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
+
 		return nil, fmt.Errorf("header timeout: %w", err)
 	}
 	defer resp.Body.Close()
@@ -538,7 +540,7 @@ func SubmitSegment(ctx context.Context, sess *BroadcastSession, seg *stream.HLSS
 		if monitor.Enabled {
 			if resp.StatusCode == 403 && strings.Contains(errorString, "OrchestratorCapped") {
 				monitor.SegmentUploadFailed(ctx, nonce, seg.SeqNo, monitor.SegmentUploadErrorOrchestratorCapped, errors.New(errorString), false, sess.OrchestratorInfo.Transcoder)
-				glog.Infof("Removing orchestrator reason=%v, ethaddress=%v, manifestID=%v,ip address=%v", "OrchestratorCapped", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex(), "TBD", sess.OrchestratorInfo.Address)
+				glog.Infof("Removing orchestrator reason=%v, ethaddress=%v, manifestID=%v,ip address=%v", "OrchestratorCapped", ethcommon.BytesToAddress(sess.OrchestratorInfo.TicketParams.Recipient).Hex(), "OrchestratorCapped", sess.OrchestratorInfo.Address)
 			} else {
 				monitor.SegmentUploadFailed(ctx, nonce, seg.SeqNo, monitor.SegmentUploadError(resp.Status),
 					fmt.Errorf("Code: %d Error: %s", resp.StatusCode, errorString), false, sess.OrchestratorInfo.Transcoder)
