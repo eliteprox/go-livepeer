@@ -288,7 +288,7 @@ func (mgr *BasicPlaylistManager) Cleanup() {
 			}
 
 			for _, segment := range segments {
-				mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs)))
+				mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs/1000.0)))
 			}
 
 			mpl.Live = false
