@@ -315,31 +315,6 @@ func (mgr *BasicPlaylistManager) Cleanup() {
 	}
 }
 
-// func (mgr *BasicPlaylistManager) SaveFullStream() {
-// 	mgr.jsonListSync.Lock()
-// 	defer mgr.jsonListSync.Unlock()
-// 	mediaLists := make(map[string]*m3u8.MediaPlaylist)
-// 	for _, track := range mgr.jsonList.Tracks {
-// 		segments := mgr.jsonList.Segments[track.Name]
-// 		mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
-// 		if err != nil {
-// 			glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
-// 			return
-// 		}
-
-// 		for _, segment := range segments {
-// 			mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs)))
-// 		}
-
-// 		mpl.Live = false
-// 		mediaLists[track.Name] = mpl
-
-// 		//Save the full m3u8 renditions
-// 		mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
-// 		glog.Infof("Successfully finalized %s", track.Name)
-// 	}
-// }
-
 func (mgr *BasicPlaylistManager) GetOSSession() drivers.OSSession {
 	return mgr.storageSession
 }
