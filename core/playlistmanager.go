@@ -298,10 +298,14 @@ func (mgr *BasicPlaylistManager) Cleanup() {
 			mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
 			glog.Infof("Successfully finalized %s", track.Name)
 		}
-		for _, element := range mgr.mediaListWriteQueue {
+
+		mgr.storageSession.EndSession()
+	}
+
+	for _, element := range mgr.mediaListWriteQueue {
+		if element != nil {
 			element.StopAfter(JsonPlaylistQuitTimeout * 2)
 		}
-		mgr.storageSession.EndSession()
 	}
 	if mgr.jsonListWriteQueue != nil {
 		mgr.jsonListWriteQueue.StopAfter(JsonPlaylistQuitTimeout)
@@ -311,30 +315,30 @@ func (mgr *BasicPlaylistManager) Cleanup() {
 	}
 }
 
-func (mgr *BasicPlaylistManager) SaveFullStream() {
-	mgr.jsonListSync.Lock()
-	defer mgr.jsonListSync.Unlock()
-	mediaLists := make(map[string]*m3u8.MediaPlaylist)
-	for _, track := range mgr.jsonList.Tracks {
-		segments := mgr.jsonList.Segments[track.Name]
-		mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
-		if err != nil {
-			glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
-			return
-		}
+// func (mgr *BasicPlaylistManager) SaveFullStream() {
+// 	mgr.jsonListSync.Lock()
+// 	defer mgr.jsonListSync.Unlock()
+// 	mediaLists := make(map[string]*m3u8.MediaPlaylist)
+// 	for _, track := range mgr.jsonList.Tracks {
+// 		segments := mgr.jsonList.Segments[track.Name]
+// 		mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
+// 		if err != nil {
+// 			glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
+// 			return
+// 		}
 
-		for _, segment := range segments {
-			mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs)))
-		}
+// 		for _, segment := range segments {
+// 			mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs)))
+// 		}
 
-		mpl.Live = false
-		mediaLists[track.Name] = mpl
+// 		mpl.Live = false
+// 		mediaLists[track.Name] = mpl
 
-		//Save the full m3u8 renditions
-		mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
-		glog.Infof("Successfully finalized %s", track.Name)
-	}
-}
+// 		//Save the full m3u8 renditions
+// 		mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
+// 		glog.Infof("Successfully finalized %s", track.Name)
+// 	}
+// }
 
 func (mgr *BasicPlaylistManager) GetOSSession() drivers.OSSession {
 	return mgr.storageSession
