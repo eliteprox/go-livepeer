@@ -220,7 +220,7 @@ func selectSession(sessions []*BroadcastSession, exclude []*BroadcastSession, du
 		if len(session.SegsInFlight) == 0 {
 			if session.LatencyScore > 0 && session.LatencyScore <= SELECTOR_LATENCY_SCORE_THRESHOLD {
 				//broadcaster introspection
-				glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", fmt.Sprintf("performance, no segs in flight, latency score of %v < %v", session.LatencyScore, durMult), ethcommon.Bytes2Hex(session.OrchestratorInfo.TicketParams.Recipient), session.Params.ManifestID, session.OrchestratorInfo.AuthToken.SessionId, session.OrchestratorInfo.Transcoder)
+				glog.Infof("Selected orchestrator reason=%v, ethaddress=0x%v, manifestID=%v, orchSessionID=%v, ip address=%v", fmt.Sprintf("performance, no segs in flight, latency score of %v < %v", session.LatencyScore, durMult), ethcommon.Bytes2Hex(session.OrchestratorInfo.TicketParams.Recipient), session.Params.ManifestID, session.OrchestratorInfo.AuthToken.SessionId, session.OrchestratorInfo.Transcoder)
 				return session
 			}
 		}
@@ -236,7 +236,7 @@ func selectSession(sessions []*BroadcastSession, exclude []*BroadcastSession, du
 
 			if timeInFlight < maxTimeInFlight {
 				//broadcaster introspection
-				glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", fmt.Sprintf("performance, segs in flight, latency score of %v < %v", session.LatencyScore, durMult), ethcommon.Bytes2Hex(session.OrchestratorInfo.TicketParams.Recipient), session.Params.ManifestID, session.OrchestratorInfo.AuthToken.SessionId, session.OrchestratorInfo.Transcoder)
+				glog.Infof("Selected orchestrator reason=%v, ethaddress=0x%v, manifestID=%v, orchSessionID=%v, ip address=%v", fmt.Sprintf("performance, segs in flight, latency score of %v < %v", session.LatencyScore, durMult), ethcommon.Bytes2Hex(session.OrchestratorInfo.TicketParams.Recipient), session.Params.ManifestID, session.OrchestratorInfo.AuthToken.SessionId, session.OrchestratorInfo.Transcoder)
 				return session
 			}
 		}
@@ -308,7 +308,7 @@ func (sp *SessionPool) selectSessions(ctx context.Context, sessionsNum int) []*B
 				sess.SegsInFlight = nil
 				sp.lastSess = removeSessionFromList(sp.lastSess, sess)
 				//broadcaster introspection
-				glog.Infof("Removing orchestrator from session list reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sp.mid, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
+				glog.Infof("Removing orchestrator from session list reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
 				//clog.V(common.DEBUG).Infof(ctx, "Removing orch=%v from manifestID=%s session list", sess.Transcoder(), sp.mid)
 				if monitor.Enabled {
 					monitor.OrchestratorSwapped(ctx)
@@ -323,7 +323,7 @@ func (sp *SessionPool) selectSessions(ctx context.Context, sessionsNum int) []*B
 		for _, ls := range sp.lastSess {
 			if !includesSession(selectedSessions, ls) {
 				//broadcaster introspection
-				glog.Infof("Swapping from orch=%v to orch=%+v reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "", ls.Transcoder(), getOrchs(selectedSessions), ethcommon.Bytes2Hex(ls.OrchestratorInfo.TicketParams.Recipient), sp.mid, ls.OrchestratorInfo.AuthToken.SessionId, ls.OrchestratorInfo.Transcoder)
+				glog.Infof("Swapping from orch=%v to orch=%+v reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "", ls.Transcoder(), getOrchs(selectedSessions), ethcommon.Bytes2Hex(ls.OrchestratorInfo.TicketParams.Recipient), ls.Params.ManifestID, ls.OrchestratorInfo.AuthToken.SessionId, ls.OrchestratorInfo.Transcoder)
 				//clog.V(common.DEBUG).Infof(ctx, "Swapping from orch=%v to orch=%+v for manifestID=%s", ls.Transcoder(),
 				//	getOrchs(selectedSessions), sp.mid)
 				if monitor.Enabled {
@@ -754,7 +754,7 @@ func (bsm *BroadcastSessionsManager) completeSession(ctx context.Context, sess *
 	defer bsm.sessLock.Unlock()
 	bsm.completeSessionUnsafe(ctx, sess, tearDown)
 	//broadcaster introspection
-	glog.Infof("Session completed, free up resources on orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
+	glog.Infof("Session completed reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", ctx.Err().Error(), ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
 }
 
 func (bsm *BroadcastSessionsManager) sessionVerified(sess *BroadcastSession) {

@@ -3,6 +3,7 @@ package server
 import (
 	"container/heap"
 	"context"
+	"fmt"
 	"math/rand"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -147,7 +148,7 @@ func (s *MinLSSelector) Select(ctx context.Context) *BroadcastSession {
 
 	//broadcaster introspection
 	session := sess.(*BroadcastSession)
-	glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "performance, known session", ethcommon.Bytes2Hex(session.OrchestratorInfo.TicketParams.Recipient), session.Params.ManifestID, session.PMSessionID, session.OrchestratorInfo.Transcoder)
+	glog.Infof("Selected orchestrator reason=%v, ethaddress=0x%v, manifestID=%v, orchSessionID=%v, ip address=%v", "performance, known session", ethcommon.Bytes2Hex(session.OrchestratorInfo.TicketParams.Recipient), session.Params.ManifestID, session.OrchestratorInfo.AuthToken.SessionId, session.OrchestratorInfo.Transcoder)
 	return heap.Pop(s.knownSessions).(*BroadcastSession)
 }
 
@@ -182,7 +183,7 @@ func (s *MinLSSelector) selectUnknownSession(ctx context.Context) *BroadcastSess
 		sess := s.unknownSessions[i]
 		s.removeUnknownSession(i)
 		//broadcaster introspection
-		glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "random", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.PMSessionID, sess.OrchestratorInfo.Transcoder)
+		glog.Infof("Selected orchestrator reason=%v, ethaddress=0x%v, manifestID=%v, orchSessionID=%v, ip address=%v", fmt.Sprintf("%v random factor", s.randFreq), ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
 		return sess
 	}
 
@@ -238,7 +239,7 @@ func (s *MinLSSelector) selectUnknownSession(ctx context.Context) *BroadcastSess
 
 		if r <= 0 {
 			//broadcaster introspection
-			glog.Infof("Selected orchestrator reason=%v, ethaddress=%v, manifestID=%v, orchSessionID=%v, ip address=%v", "stake weight", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.PMSessionID, sess.OrchestratorInfo.Transcoder)
+			glog.Infof("Selected orchestrator reason=%v, ethaddress=0x%v, manifestID=%v, orchSessionID=%v, ip address=%v", "stake weight", ethcommon.Bytes2Hex(sess.OrchestratorInfo.TicketParams.Recipient), sess.Params.ManifestID, sess.OrchestratorInfo.AuthToken.SessionId, sess.OrchestratorInfo.Transcoder)
 			s.removeUnknownSession(i)
 			return sess
 		}
