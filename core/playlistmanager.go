@@ -279,26 +279,27 @@ func (mgr *BasicPlaylistManager) ManifestID() ManifestID {
 func (mgr *BasicPlaylistManager) Cleanup() {
 	if mgr.storageSession != nil {
 		mediaLists := make(map[string]*m3u8.MediaPlaylist)
-		for _, track := range mgr.jsonList.Tracks {
-			segments := mgr.jsonList.Segments[track.Name]
-			mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
-			if err != nil {
-				glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
-				return
+		if (mgr.jsonList != nil) {
+			for _, track := range mgr.jsonList.Tracks {
+				segments := mgr.jsonList.Segments[track.Name]
+				mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
+				if err != nil {
+					glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
+					return
+				}
+	
+				for _, segment := range segments {
+					mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs/1000.0)))
+				}
+	
+				mpl.Live = false
+				mediaLists[track.Name] = mpl
+	
+				//Save the full m3u8 renditions
+				mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
+				glog.Infof("Successfully finalized %s", track.Name)
 			}
-
-			for _, segment := range segments {
-				mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs/1000.0)))
-			}
-
-			mpl.Live = false
-			mediaLists[track.Name] = mpl
-
-			//Save the full m3u8 renditions
-			mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
-			glog.Infof("Successfully finalized %s", track.Name)
 		}
-
 		mgr.storageSession.EndSession()
 	}
 
