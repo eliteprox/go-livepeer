@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -310,15 +309,14 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 		mux := http.DefaultServeMux
 		http.DefaultServeMux = http.NewServeMux()
 
-		mux.Handle("/routingdata/", r.basicAuth(r.handleGetRoutingData))
+		mux.Handle("/routingdata", r.basicAuth(r.handleGetRoutingData))
+
+		mux.Handle("/grafana", r.basicAuth(r.handleGrafanaData))
 
 		mux.Handle("/updateroutingdata", r.basicAuth(r.handleUpdateRoutingData))
 
-		mux.Handle("/api/health", r.basicAuth(r.handleNodeGraphHealth))
+		mux.Handle("/api/health", r.basicAuth(r.handleHealth))
 
-		mux.Handle("/api/graph/fields", r.basicAuth(r.handleNodeGraphFields))
-
-		mux.Handle("/api/graph/data", r.basicAuth(r.handleNodeGraphData))
 		srv.Handler = mux
 
 		glog.Infof("started router data server at %v", dataURI)
@@ -857,8 +855,9 @@ func startLatencyRouterClient(ctx context.Context, router_uri url.URL) (net.Late
 // ===========================================================================================
 func (r *LatencyRouter) handleGetRoutingData(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Disposition", "attachment; filename=routing.json")
-	w.Header().Set("Content-Type", req.Header.Get("Content-Type"))
+	w.Header().Set("Content-Type", "application/json")
 
+	glog.Info("received routing data request")
 	if reader, err := os.Open(filepath.Join(r.workDir, "routing.json")); err == nil {
 		defer reader.Close()
 		io.Copy(w, reader)
@@ -867,7 +866,28 @@ func (r *LatencyRouter) handleGetRoutingData(w http.ResponseWriter, req *http.Re
 	}
 }
 
+func (r *LatencyRouter) handleGrafanaData(w http.ResponseWriter, req *http.Request) {
+	glog.Info("received grafana data request")
+	w.Header().Set("Content-Type", "application/json")
+
+	// Create a data object to unmarshal JSON into
+	data, err := json.Marshal(r.closestOrchestratorToB)
+	if err != nil {
+		glog.Errorf("Error marshaling JSON: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// Write the JSON response
+	_, err = w.Write(data)
+	if err != nil {
+		glog.Errorf("Error writing response: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+
 func (r *LatencyRouter) handleUpdateRoutingData(w http.ResponseWriter, req *http.Request) {
+	glog.Info("received update routing data request")
 	// Check if the request method is POST
 	if req.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -895,78 +915,9 @@ func (r *LatencyRouter) handleUpdateRoutingData(w http.ResponseWriter, req *http
 	respondOk(w, nil)
 }
 
-func (r *LatencyRouter) handleNodeGraphHealth(w http.ResponseWriter, req *http.Request) {
+func (r *LatencyRouter) handleHealth(w http.ResponseWriter, req *http.Request) {
+	glog.Info("received health check request")
 	w.WriteHeader(200)
-}
-
-func (r *LatencyRouter) handleNodeGraphFields(w http.ResponseWriter, req *http.Request) {
-	type EdgeField struct {
-		FieldName string `json:"field_name"`
-		FieldType string `json:"type"`
-	}
-	type NodeField struct {
-		FieldName  string `json:"field_name"`
-		FieldType  string `json:"type"`
-		FieldColor string `json:"color,omitempty"`
-	}
-	type Fields struct {
-		EdgeFields []EdgeField `json:"edges_fields"`
-		NodeFields []NodeField `json:"nodes_fields"`
-	}
-	fields := Fields{}
-	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "id", FieldType: "string"})
-	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "source", FieldType: "string"})
-	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "target", FieldType: "string"})
-	fields.EdgeFields = append(fields.EdgeFields, EdgeField{FieldName: "mainStat", FieldType: "number"})
-
-	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "id", FieldType: "string"})
-	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "title", FieldType: "string"})
-	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "mainStat", FieldType: "string"})
-	fields.NodeFields = append(fields.NodeFields, NodeField{FieldName: "secondaryStat", FieldType: "string"})
-
-	respondJson(w, fields)
-
-}
-
-func (r *LatencyRouter) handleNodeGraphData(w http.ResponseWriter, req *http.Request) {
-
-	type Node struct {
-		Id            string `json:"id"`
-		Title         string `json:"title"`
-		Mainstat      string `json:"mainStat,omitempty"`
-		Secondarystat string `json:"secondaryStat,omitempty"`
-	}
-	type NodeEdge struct {
-		Id            string `json:"id"`
-		Source        string `json:"source"`
-		Target        string `json:"target"`
-		Mainstat      string `json:"mainStat,omitempty"`
-		Secondarystat string `json:"secondaryStat,omitempty"`
-	}
-	type NodeData struct {
-		NodeEdgeData []NodeEdge `json:"edges"`
-		NodeData     []Node     `json:"nodes"`
-	}
-
-	orchs := make(map[string]bool)
-	data := NodeData{}
-
-	edge_id := 1
-	for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
-		new_edge := NodeEdge{Id: strconv.Itoa(edge_id), Source: broadcaster_ip, Target: lat_chk_resp.OrchUri.Host, Mainstat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
-		data.NodeEdgeData = append(data.NodeEdgeData, new_edge)
-		edge_id++
-
-		new_node := Node{Id: broadcaster_ip, Title: broadcaster_ip, Mainstat: lat_chk_resp.UpdatedAt.Format("2006-01-02 15:04:05"), Secondarystat: strconv.FormatInt(lat_chk_resp.RespTime, 10)}
-		orchs[lat_chk_resp.OrchUri.Host] = true
-		data.NodeData = append(data.NodeData, new_node)
-	}
-	for orch, _ := range orchs {
-		new_node := Node{Id: orch, Title: orch}
-		data.NodeData = append(data.NodeData, new_node)
-	}
-
-	respondJson(w, data)
 }
 
 func (r *LatencyRouter) basicAuth(next http.HandlerFunc) http.HandlerFunc {
