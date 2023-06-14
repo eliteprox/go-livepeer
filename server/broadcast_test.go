@@ -244,7 +244,9 @@ func (pm *stubPlaylistManager) GetOSSession() drivers.OSSession {
 	return pm.os
 }
 
-func (pm *stubPlaylistManager) Cleanup()     {}
+func (pm *stubPlaylistManager) Cleanup() {}
+func (pm *stubPlaylistManager) SaveFullPlaylist(ctx context.Context, sess drivers.OSSession) {
+}
 func (pm *stubPlaylistManager) FlushRecord() {}
 func (pm *stubPlaylistManager) GetRecordOSSession() drivers.OSSession {
 	return nil

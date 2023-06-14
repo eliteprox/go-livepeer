@@ -1,14 +1,17 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/golang/glog"
+	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-tools/drivers"
 	ffmpeg "github.com/livepeer/lpms/ffmpeg"
@@ -47,6 +50,8 @@ type PlaylistManager interface {
 
 	FlushRecord()
 
+	SaveFullPlaylist(ctx context.Context, sess drivers.OSSession)
+
 	Cleanup()
 }
 
@@ -60,6 +65,7 @@ type BasicPlaylistManager struct {
 	mediaLists            map[string]*m3u8.MediaPlaylist
 	mediaListsRec         map[string]*m3u8.MediaPlaylist
 	mapSync               *sync.RWMutex
+	jsonPlaylists         []string
 	jsonList              *JsonPlaylist
 	jsonListWriteQueue    *drivers.OverwriteQueue
 	masterPListWriteQueue *drivers.OverwriteQueue
@@ -260,6 +266,8 @@ func (mgr *BasicPlaylistManager) makeNewOverwriteQueue() {
 		fmt.Sprintf("json playlist for manifestId=%s", mgr.manifestID),
 		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
 
+	mgr.jsonPlaylists = append(mgr.jsonPlaylists, mgr.jsonList.name)
+
 	mgr.masterPListWriteQueue = drivers.NewOverwriteQueue(mgr.recordSession, "index.m3u8",
 		fmt.Sprintf("m3u8 playlist for manifestId=%s", mgr.manifestID),
 		jsonPlaylistMaxRetries, JsonPlaylistInitialTimeout, JsonPlaylistMaxTimeout)
@@ -278,28 +286,6 @@ func (mgr *BasicPlaylistManager) ManifestID() ManifestID {
 
 func (mgr *BasicPlaylistManager) Cleanup() {
 	if mgr.storageSession != nil {
-		mediaLists := make(map[string]*m3u8.MediaPlaylist)
-		if (mgr.jsonList != nil) {
-			for _, track := range mgr.jsonList.Tracks {
-				segments := mgr.jsonList.Segments[track.Name]
-				mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
-				if err != nil {
-					glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
-					return
-				}
-	
-				for _, segment := range segments {
-					mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs/1000.0)))
-				}
-	
-				mpl.Live = false
-				mediaLists[track.Name] = mpl
-	
-				//Save the full m3u8 renditions
-				mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
-				glog.Infof("Successfully finalized %s", track.Name)
-			}
-		}
 		mgr.storageSession.EndSession()
 	}
 
@@ -313,6 +299,109 @@ func (mgr *BasicPlaylistManager) Cleanup() {
 	}
 	if mgr.masterPListWriteQueue != nil {
 		mgr.masterPListWriteQueue.StopAfter(JsonPlaylistQuitTimeout)
+	}
+}
+
+//TODO: Pass in manifestID
+//Saves a full m3u8 playlist at the end of the stream
+func (mgr *BasicPlaylistManager) SaveFullPlaylist(ctx context.Context, sess drivers.OSSession) {
+	if mgr.masterPListWriteQueue != nil { //Only save if we have a recording session
+		var track string
+		var finalize = true
+		var manifestID = (string)(mgr.manifestID)
+		var manifests = []string{manifestID}
+
+		//TODO convert all code in getPlaylistsFromStore to use one manifest string and not an array
+		if len(mgr.jsonPlaylists) == 0 {
+			clog.Errorf(ctx, "No JSON playlists found")
+			return
+		}
+
+		clog.V(common.VERBOSE).Infof(ctx, "Found json files for manifest id: %+v", manifests[0], mgr.jsonPlaylists)
+
+		var playlistData = make(map[string][]byte)
+		var jsonPlaylists []*JsonPlaylist
+
+		now1 := time.Now()
+		//Download the playlists from this session
+		for _, fname := range mgr.jsonPlaylists {
+			sessrecording := sess.OS().NewSession(manifestID)
+			defer sessrecording.EndSession()
+
+			s3resp, err := sessrecording.ReadData(ctx, sess.GetInfo().S3Info.Key+"/"+fname)
+			if err == nil {
+				data, err := ioutil.ReadAll(s3resp.Body)
+
+				manifestMainJspl := NewJSONPlaylist()
+				playlistData[fname] = data
+
+				jspl := &JsonPlaylist{}
+				err = json.Unmarshal(data, jspl)
+				if err != nil {
+					clog.Errorf(ctx, "Error unmarshalling json playlist err=%q", err)
+					return
+				}
+				manifestMainJspl.AddMaster(jspl)
+				if finalize {
+					for trackName := range jspl.Segments {
+						manifestMainJspl.AddTrack(jspl, trackName)
+					}
+				} else if track != "" {
+					manifestMainJspl.AddTrack(jspl, track)
+				}
+
+				jsonPlaylists = append(jsonPlaylists, manifestMainJspl)
+			}
+		}
+
+		clog.V(common.VERBOSE).Infof(ctx, "Finished reading num=%d playlist files for took=%s", len(playlistData), time.Since(now1))
+
+		var mainJspl *JsonPlaylist
+
+		if len(jsonPlaylists) == 1 {
+			mainJspl = jsonPlaylists[0]
+		} else {
+			mainJspl = NewJSONPlaylist()
+			// join sessions
+			for _, jspl := range jsonPlaylists {
+				mainJspl.AddMaster(jspl)
+				if finalize {
+					for trackName := range jspl.Segments {
+						mainJspl.AddDiscontinuedTrack(jspl, trackName)
+					}
+				} else if track != "" {
+					mainJspl.AddDiscontinuedTrack(jspl, track)
+				}
+			}
+		}
+
+		if (len(mainJspl.Segments) > 0) && (len(mainJspl.Tracks) > 0) {
+			//BEGIN EXISTING SAVE FULL PLAYLIST
+			mediaLists := make(map[string]*m3u8.MediaPlaylist)
+			if mainJspl != nil { //TODO: You might need to remove this
+				for _, track := range mainJspl.Tracks {
+					segments := mainJspl.Segments[track.Name]
+					mpl, err := m3u8.NewMediaPlaylist(uint(len(segments)), uint(len(segments)))
+					if err != nil {
+						glog.Error(fmt.Errorf("an error occurred while parsing the json playlist: %w", err))
+						return
+					}
+
+					for _, segment := range segments {
+						mpl.InsertSegment(segment.SeqNo, newMediaSegment(segment.URI, float64(segment.DurationMs/1000.0)))
+					}
+
+					mpl.Live = false
+					mediaLists[track.Name] = mpl
+
+					//Save the full m3u8 renditions
+					mgr.mediaListWriteQueue[track.Name].Save(mediaLists[track.Name].Encode().Bytes())
+					glog.Infof("Successfully finalized %s", track.Name)
+				}
+			}
+
+			clog.V(common.VERBOSE).Infof(ctx, "Playlist generation for took=%s", time.Since(now1))
+		}
 	}
 }
 
@@ -339,6 +428,7 @@ func (mgr *BasicPlaylistManager) FlushRecord() {
 		if mgr.jsonList.DurationMs > jsonPlaylistRotationInterval {
 			mgr.jsonList = NewJSONPlaylist()
 			mgr.masterPList = m3u8.NewMasterPlaylist()
+			mgr.jsonPlaylists = append(mgr.jsonPlaylists, mgr.jsonList.name)
 			mgr.makeNewOverwriteQueue()
 		}
 	}

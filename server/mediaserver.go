@@ -621,6 +621,7 @@ func removeRTMPStream(ctx context.Context, s *LivepeerServer, extmid core.Manife
 	}
 	cxn.stream.Close()
 	cxn.sessManager.cleanup(ctx)
+	cxn.pl.SaveFullPlaylist(ctx, cxn.pl.GetRecordOSSession())
 	cxn.pl.Cleanup()
 	clog.Infof(ctx, "Ended stream with manifestID=%s external manifestID=%s", intmid, extmid)
 	delete(s.rtmpConnections, intmid)
