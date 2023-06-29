@@ -867,11 +867,23 @@ func (r *LatencyRouter) handleGetRoutingData(w http.ResponseWriter, req *http.Re
 }
 
 func (r *LatencyRouter) handleGrafanaData(w http.ResponseWriter, req *http.Request) {
+
 	glog.Info("received grafana data request")
 	w.Header().Set("Content-Type", "application/json")
-
+	type GrafanaData struct {
+		Broadcaster  string
+		Orchestrator string
+		RespTime     int64
+		UpdatedAt    time.Time
+		DoNotUpdate  bool
+	}
+	grafana_data := []GrafanaData{}
+	for b_ip, v := range r.closestOrchestratorToB {
+		grafana_data = append(grafana_data, GrafanaData{Broadcaster: b_ip, Orchestrator: v.OrchUri.Host, RespTime: v.RespTime, UpdatedAt: v.UpdatedAt, DoNotUpdate: v.DoNotUpdate})
+	}
 	// Create a data object to unmarshal JSON into
-	data, err := json.Marshal(r.closestOrchestratorToB)
+	data, err := json.Marshal(grafana_data)
+
 	if err != nil {
 		glog.Errorf("Error marshaling JSON: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
