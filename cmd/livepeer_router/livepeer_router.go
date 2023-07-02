@@ -35,17 +35,18 @@ func main() {
 
 	datadir := flag.String("datadir", "", "Directory that data is stored in")
 	httpAddr := flag.String("httpAddr", "", "Address (IP:port) to bind to for HTTP")
-	serviceAddr := flag.String("serviceAddr", "", "Publicly accessible URI (IP:port or hostname) to receive requests at. All routers need to run on this port.")
-	dataPort := flag.String("dataPort", "", "port to serve saved routing data")
-	orchAddr := flag.String("orchAddr", "", "Comma delimited list of orchestrator URIs (IP:port or hostname) to use")
-	useLatencyToB := flag.Bool("useLatencyToB", false, "select orchestrator based on latency to broadcaster")
-	searchTimeout := flag.Duration("searchTimeout", 600*time.Millisecond, "time to wait for orchestrators response.  Default is 2.5 seconds. Needs to be under 3 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
-	pingBroadcasterTimeout := flag.Duration("pingBroadcasterTimeout", 300*time.Millisecond, "time to wait for orchestrators response.  Default is 500 milliseconds. Response needs to be under 4 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
-	secret := flag.String("secret", "", "secret to secure router data endpoint with")
-	cacheTime := flag.Duration("cacheTime", 60*time.Minute, "input time to cache closest orch (minutes = 5m, seconds = 45s, default is 60 minutes)")
-	roundRobin := flag.Bool("roundRobin", true, "ping all orchestrators to get closest orch, returns first orch to respond if set to false")
-	testBroadcasterIP := flag.String("testBroadcasterIP", "", "input known broadcaster IP address for testing (comma delimited)")
-	backgroundUpdate := flag.Bool("backgroundUpdate", false, "update ping tests to broadcasters in background process")
+	serviceAddr := flag.String("serviceAddr", "", "Publicly accessible URI (IP:port or hostname) to receive requests at. All routers need to run on this port. If using Geo Distance, this needs to be an IP address.")
+	dataPort := flag.String("dataPort", "", "Port to serve saved routing data")
+	orchAddr := flag.String("orchAddr", "", "Comma delimited list of orchestrator URIs (IP:port or hostname) to use. If using Geo Distance, this needs to be an ip address")
+	useLatencyToB := flag.Bool("useLatencyToB", false, "Select orchestrator based on latency to broadcaster")
+	searchTimeout := flag.Duration("searchTimeout", 375*time.Millisecond, "Time to wait for orchestrators response.  Default is 375 milliseconds. Needs to be under 3 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
+	pingBroadcasterTimeout := flag.Duration("pingBroadcasterTimeout", 250*time.Millisecond, "Time to wait for orchestrators response.  Default is 250 milliseconds. Response needs to be under 3 seconds to stay in B discovery loop. (seconds = 1s, milliseconds = 1000ms)")
+	secret := flag.String("secret", "", "Secret to secure router data endpoint with")
+	cacheTime := flag.Duration("cacheTime", 60*time.Minute, "Input time to cache closest orch (minutes = 5m, seconds = 45s, default is 60 minutes)")
+	roundRobin := flag.Bool("roundRobin", true, "Ping all orchestrators to get closest orch, returns first orch to respond if set to false")
+	testBroadcasterIP := flag.String("testBroadcasterIP", "", "Input known broadcaster IP address for testing (comma delimited)")
+	backgroundUpdate := flag.Bool("backgroundUpdate", false, "Run this on only one router.  Update ping tests to broadcasters in background process")
+	geoRouting := flag.Bool("geoRouting", false, "use maxmind db to router requests on distance (save db at /[dataDir]/GeoIP2-City.mmdb)")
 
 	flag.Parse()
 
@@ -123,7 +124,8 @@ func main() {
 
 	errCh := make(chan error)
 	if *useLatencyToB {
-		srv := server.NewLatencyRouter(orch_nodes, *testBroadcasterIP, *cacheTime, *searchTimeout, *pingBroadcasterTimeout, *roundRobin)
+		srv := server.NewLatencyRouter(orch_nodes, *testBroadcasterIP, *cacheTime, *searchTimeout, *pingBroadcasterTimeout, *roundRobin, *geoRouting)
+		glog.Info("Starting livepeer latency based router")
 		go func() {
 			errCh <- srv.Start(uri, serviceURI, dPort, *datadir, *secret, *backgroundUpdate)
 		}()

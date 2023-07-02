@@ -24,39 +24,39 @@ var _ = math.Inf
 // proto package needs to be updated.
 const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
-type BroadcasterLatencyReq struct {
+type LatencyCheckReq struct {
 	Uri                  string   `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
 	XXX_sizecache        int32    `json:"-"`
 }
 
-func (m *BroadcasterLatencyReq) Reset()         { *m = BroadcasterLatencyReq{} }
-func (m *BroadcasterLatencyReq) String() string { return proto.CompactTextString(m) }
-func (*BroadcasterLatencyReq) ProtoMessage()    {}
-func (*BroadcasterLatencyReq) Descriptor() ([]byte, []int) {
+func (m *LatencyCheckReq) Reset()         { *m = LatencyCheckReq{} }
+func (m *LatencyCheckReq) String() string { return proto.CompactTextString(m) }
+func (*LatencyCheckReq) ProtoMessage()    {}
+func (*LatencyCheckReq) Descriptor() ([]byte, []int) {
 	return fileDescriptor_94b28f5872f7995e, []int{0}
 }
 
-func (m *BroadcasterLatencyReq) XXX_Unmarshal(b []byte) error {
-	return xxx_messageInfo_BroadcasterLatencyReq.Unmarshal(m, b)
+func (m *LatencyCheckReq) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_LatencyCheckReq.Unmarshal(m, b)
 }
-func (m *BroadcasterLatencyReq) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	return xxx_messageInfo_BroadcasterLatencyReq.Marshal(b, m, deterministic)
+func (m *LatencyCheckReq) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_LatencyCheckReq.Marshal(b, m, deterministic)
 }
-func (m *BroadcasterLatencyReq) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_BroadcasterLatencyReq.Merge(m, src)
+func (m *LatencyCheckReq) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_LatencyCheckReq.Merge(m, src)
 }
-func (m *BroadcasterLatencyReq) XXX_Size() int {
-	return xxx_messageInfo_BroadcasterLatencyReq.Size(m)
+func (m *LatencyCheckReq) XXX_Size() int {
+	return xxx_messageInfo_LatencyCheckReq.Size(m)
 }
-func (m *BroadcasterLatencyReq) XXX_DiscardUnknown() {
-	xxx_messageInfo_BroadcasterLatencyReq.DiscardUnknown(m)
+func (m *LatencyCheckReq) XXX_DiscardUnknown() {
+	xxx_messageInfo_LatencyCheckReq.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_BroadcasterLatencyReq proto.InternalMessageInfo
+var xxx_messageInfo_LatencyCheckReq proto.InternalMessageInfo
 
-func (m *BroadcasterLatencyReq) GetUri() string {
+func (m *LatencyCheckReq) GetUri() string {
 	if m != nil {
 		return m.Uri
 	}
@@ -64,7 +64,7 @@ func (m *BroadcasterLatencyReq) GetUri() string {
 }
 
 type LatencyCheckRes struct {
-	RespTime             int64    `protobuf:"varint,1,opt,name=respTime,proto3" json:"respTime,omitempty"`
+	RespTime             float64  `protobuf:"fixed64,1,opt,name=respTime,proto3" json:"respTime,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
 	XXX_sizecache        int32    `json:"-"`
@@ -95,7 +95,7 @@ func (m *LatencyCheckRes) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_LatencyCheckRes proto.InternalMessageInfo
 
-func (m *LatencyCheckRes) GetRespTime() int64 {
+func (m *LatencyCheckRes) GetRespTime() float64 {
 	if m != nil {
 		return m.RespTime
 	}
@@ -105,7 +105,8 @@ func (m *LatencyCheckRes) GetRespTime() int64 {
 type ClosestOrchestratorReq struct {
 	BroadcasterUri       string   `protobuf:"bytes,1,opt,name=broadcasterUri,proto3" json:"broadcasterUri,omitempty"`
 	OrchestratorUri      string   `protobuf:"bytes,2,opt,name=orchestratorUri,proto3" json:"orchestratorUri,omitempty"`
-	RespTime             int64    `protobuf:"varint,3,opt,name=respTime,proto3" json:"respTime,omitempty"`
+	RespTime             float64  `protobuf:"fixed64,3,opt,name=respTime,proto3" json:"respTime,omitempty"`
+	Distance             float64  `protobuf:"fixed64,4,opt,name=distance,proto3" json:"distance,omitempty"`
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
 	XXX_unrecognized     []byte   `json:"-"`
 	XXX_sizecache        int32    `json:"-"`
@@ -150,9 +151,16 @@ func (m *ClosestOrchestratorReq) GetOrchestratorUri() string {
 	return ""
 }
 
-func (m *ClosestOrchestratorReq) GetRespTime() int64 {
+func (m *ClosestOrchestratorReq) GetRespTime() float64 {
 	if m != nil {
 		return m.RespTime
+	}
+	return 0
+}
+
+func (m *ClosestOrchestratorReq) GetDistance() float64 {
+	if m != nil {
+		return m.Distance
 	}
 	return 0
 }
@@ -197,7 +205,7 @@ func (m *ClosestOrchestratorRes) GetUpdated() bool {
 }
 
 func init() {
-	proto.RegisterType((*BroadcasterLatencyReq)(nil), "net.BroadcasterLatencyReq")
+	proto.RegisterType((*LatencyCheckReq)(nil), "net.LatencyCheckReq")
 	proto.RegisterType((*LatencyCheckRes)(nil), "net.LatencyCheckRes")
 	proto.RegisterType((*ClosestOrchestratorReq)(nil), "net.ClosestOrchestratorReq")
 	proto.RegisterType((*ClosestOrchestratorRes)(nil), "net.ClosestOrchestratorRes")
@@ -208,24 +216,24 @@ func init() {
 }
 
 var fileDescriptor_94b28f5872f7995e = []byte{
-	// 257 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x7c, 0x51, 0xc1, 0x4a, 0xc3, 0x40,
-	0x10, 0x6d, 0x0c, 0x68, 0x1d, 0x8a, 0x2d, 0x83, 0x4a, 0x89, 0x17, 0xd9, 0x83, 0xd4, 0x83, 0x11,
-	0xea, 0x0f, 0x88, 0x3d, 0x08, 0x22, 0x08, 0x8b, 0xfd, 0x80, 0x6d, 0x32, 0xd0, 0xa2, 0x66, 0xe3,
-	0xec, 0xe4, 0xe0, 0x0f, 0xf8, 0x15, 0x7e, 0xac, 0x64, 0xa8, 0xb5, 0x2e, 0xb1, 0xb7, 0x9d, 0xf7,
-	0xde, 0xce, 0xbc, 0x79, 0x03, 0xa3, 0x8a, 0xe4, 0x9a, 0x7d, 0x23, 0xc4, 0x79, 0xcd, 0x5e, 0x3c,
-	0xa6, 0x15, 0x89, 0xb9, 0x84, 0x93, 0x3b, 0xf6, 0xae, 0x2c, 0x5c, 0x10, 0xe2, 0x47, 0x27, 0x54,
-	0x15, 0x1f, 0x96, 0xde, 0x71, 0x04, 0x69, 0xc3, 0xab, 0x71, 0x72, 0x9e, 0x4c, 0x0e, 0x6d, 0xfb,
-	0x34, 0x57, 0x30, 0x5c, 0xf3, 0xb3, 0x25, 0x15, 0x2f, 0x96, 0x02, 0x66, 0xd0, 0x67, 0x0a, 0xf5,
-	0xf3, 0xea, 0x8d, 0x54, 0x99, 0xda, 0x4d, 0x6d, 0x3e, 0x13, 0x38, 0x9d, 0xbd, 0xfa, 0x40, 0x41,
-	0x9e, 0xb8, 0x58, 0x52, 0x10, 0x76, 0xe2, 0xb9, 0xed, 0x7d, 0x01, 0x47, 0x8b, 0xdf, 0xa1, 0xf3,
-	0xcd, 0x98, 0x08, 0xc5, 0x09, 0x0c, 0xfd, 0xd6, 0xd7, 0x56, 0xb8, 0xa7, 0xc2, 0x18, 0xfe, 0x63,
-	0x24, 0x8d, 0x8c, 0x4c, 0xff, 0xf1, 0x11, 0x70, 0x0c, 0x07, 0x4d, 0x5d, 0x3a, 0xa1, 0x52, 0x0d,
-	0xf4, 0xed, 0x4f, 0x39, 0xfd, 0x4a, 0x60, 0xb0, 0xbd, 0x2c, 0xde, 0x02, 0xdc, 0x93, 0xac, 0x21,
-	0xcc, 0xf2, 0x8a, 0x24, 0xef, 0x0c, 0x2e, 0x3b, 0x56, 0x2e, 0x4a, 0xca, 0xf4, 0xf0, 0x01, 0x06,
-	0x73, 0xed, 0x6e, 0xf5, 0x08, 0x78, 0xa6, 0xba, 0xee, 0x84, 0xb2, 0x1d, 0x64, 0x30, 0xbd, 0xc5,
-	0xbe, 0x5e, 0xf0, 0xe6, 0x3b, 0x00, 0x00, 0xff, 0xff, 0x23, 0x62, 0x0f, 0x75, 0xd5, 0x01, 0x00,
-	0x00,
+	// 262 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x7c, 0x51, 0xcf, 0x4a, 0x3b, 0x31,
+	0x10, 0x6e, 0x7e, 0xfb, 0x43, 0xeb, 0x50, 0x6c, 0x09, 0x22, 0xcb, 0x7a, 0x91, 0x08, 0xd2, 0x8b,
+	0x2b, 0xd4, 0x9b, 0xd7, 0x1e, 0x04, 0x11, 0x84, 0x60, 0x1f, 0x20, 0xcd, 0x0e, 0x74, 0x51, 0x93,
+	0x75, 0x66, 0xf6, 0xe0, 0x8b, 0xf8, 0x00, 0x3e, 0xa9, 0x6c, 0xb4, 0xa5, 0x5d, 0xaa, 0xb7, 0x7c,
+	0x7f, 0x32, 0xf3, 0xf1, 0x0d, 0x4c, 0x02, 0xca, 0x35, 0xc5, 0x56, 0x90, 0xca, 0x86, 0xa2, 0x44,
+	0x9d, 0x05, 0x14, 0x73, 0x01, 0xe3, 0x07, 0x27, 0x18, 0xfc, 0xfb, 0x7c, 0x85, 0xfe, 0xd9, 0xe2,
+	0x9b, 0x9e, 0x40, 0xd6, 0x52, 0x9d, 0xab, 0x73, 0x35, 0x3d, 0xb2, 0xdd, 0xd3, 0x5c, 0xf5, 0x4d,
+	0xac, 0x0b, 0x18, 0x12, 0x72, 0xf3, 0x54, 0xbf, 0x62, 0x72, 0x2a, 0xbb, 0xc1, 0xe6, 0x53, 0xc1,
+	0xe9, 0xfc, 0x25, 0x32, 0xb2, 0x3c, 0x92, 0x5f, 0x21, 0x0b, 0x39, 0x89, 0xd4, 0xcd, 0xbe, 0x84,
+	0xe3, 0x25, 0x45, 0x57, 0x79, 0xc7, 0x82, 0xb4, 0xd8, 0xac, 0xe9, 0xb1, 0x7a, 0x0a, 0xe3, 0xb8,
+	0xf5, 0xb5, 0x33, 0xfe, 0x4b, 0xc6, 0x3e, 0xbd, 0x13, 0x24, 0xdb, 0x0d, 0xd2, 0x69, 0x55, 0xcd,
+	0xe2, 0x82, 0xc7, 0xfc, 0xff, 0xb7, 0xb6, 0xc6, 0x66, 0xf6, 0x4b, 0x46, 0xd6, 0x39, 0x1c, 0xb6,
+	0x4d, 0xe5, 0x04, 0xab, 0x14, 0x6e, 0x68, 0xd7, 0x70, 0xf6, 0xa1, 0x60, 0xb4, 0x5d, 0x84, 0xbe,
+	0x05, 0xb8, 0x43, 0xf9, 0xa1, 0xf4, 0x49, 0x19, 0x50, 0xca, 0x5e, 0x9d, 0xc5, 0x3e, 0x96, 0xcd,
+	0x40, 0xdf, 0xc3, 0x68, 0x91, 0xe6, 0xda, 0x74, 0x14, 0x7d, 0x96, 0x7c, 0xfb, 0x7b, 0x2b, 0xfe,
+	0x10, 0xd9, 0x0c, 0x96, 0x07, 0xe9, 0xa2, 0x37, 0x5f, 0x01, 0x00, 0x00, 0xff, 0xff, 0x92, 0x02,
+	0x39, 0x8a, 0xe5, 0x01, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -240,7 +248,7 @@ const _ = grpc.SupportPackageIsVersion6
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type LatencyCheckClient interface {
-	GetLatency(ctx context.Context, in *BroadcasterLatencyReq, opts ...grpc.CallOption) (*LatencyCheckRes, error)
+	GetLatency(ctx context.Context, in *LatencyCheckReq, opts ...grpc.CallOption) (*LatencyCheckRes, error)
 	UpdateRouter(ctx context.Context, in *ClosestOrchestratorReq, opts ...grpc.CallOption) (*ClosestOrchestratorRes, error)
 }
 
@@ -252,7 +260,7 @@ func NewLatencyCheckClient(cc grpc.ClientConnInterface) LatencyCheckClient {
 	return &latencyCheckClient{cc}
 }
 
-func (c *latencyCheckClient) GetLatency(ctx context.Context, in *BroadcasterLatencyReq, opts ...grpc.CallOption) (*LatencyCheckRes, error) {
+func (c *latencyCheckClient) GetLatency(ctx context.Context, in *LatencyCheckReq, opts ...grpc.CallOption) (*LatencyCheckRes, error) {
 	out := new(LatencyCheckRes)
 	err := c.cc.Invoke(ctx, "/net.LatencyCheck/GetLatency", in, out, opts...)
 	if err != nil {
@@ -272,7 +280,7 @@ func (c *latencyCheckClient) UpdateRouter(ctx context.Context, in *ClosestOrches
 
 // LatencyCheckServer is the server API for LatencyCheck service.
 type LatencyCheckServer interface {
-	GetLatency(context.Context, *BroadcasterLatencyReq) (*LatencyCheckRes, error)
+	GetLatency(context.Context, *LatencyCheckReq) (*LatencyCheckRes, error)
 	UpdateRouter(context.Context, *ClosestOrchestratorReq) (*ClosestOrchestratorRes, error)
 }
 
@@ -280,7 +288,7 @@ type LatencyCheckServer interface {
 type UnimplementedLatencyCheckServer struct {
 }
 
-func (*UnimplementedLatencyCheckServer) GetLatency(ctx context.Context, req *BroadcasterLatencyReq) (*LatencyCheckRes, error) {
+func (*UnimplementedLatencyCheckServer) GetLatency(ctx context.Context, req *LatencyCheckReq) (*LatencyCheckRes, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetLatency not implemented")
 }
 func (*UnimplementedLatencyCheckServer) UpdateRouter(ctx context.Context, req *ClosestOrchestratorReq) (*ClosestOrchestratorRes, error) {
@@ -292,7 +300,7 @@ func RegisterLatencyCheckServer(s *grpc.Server, srv LatencyCheckServer) {
 }
 
 func _LatencyCheck_GetLatency_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BroadcasterLatencyReq)
+	in := new(LatencyCheckReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -304,7 +312,7 @@ func _LatencyCheck_GetLatency_Handler(srv interface{}, ctx context.Context, dec 
 		FullMethod: "/net.LatencyCheck/GetLatency",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LatencyCheckServer).GetLatency(ctx, req.(*BroadcasterLatencyReq))
+		return srv.(LatencyCheckServer).GetLatency(ctx, req.(*LatencyCheckReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	gonet "net"
 	"net/http"
 	"net/url"
@@ -33,6 +34,8 @@ import (
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/peer"
+
+	"github.com/oschwald/geoip2-golang"
 )
 
 const getOrchestratorTimeout = 2 * time.Second
@@ -107,7 +110,7 @@ func (r *Router) Ping(ctx context.Context, req *net.PingPong) (*net.PingPong, er
 }
 
 func checkAvailability(ctx context.Context, uri *url.URL) error {
-	client, conn, err := startOrchestratorClient(ctx, uri)
+	orch_client, conn, err := startOrchestratorClient(ctx, uri)
 	if err != nil {
 		return err
 	}
@@ -116,7 +119,7 @@ func checkAvailability(ctx context.Context, uri *url.URL) error {
 	ctx, cancel := context.WithTimeout(clog.Clone(context.Background(), ctx), GRPCConnectTimeout)
 	defer cancel()
 
-	_, err = client.Ping(ctx, &net.PingPong{Value: []byte{}})
+	_, err = orch_client.Ping(ctx, &net.PingPong{Value: []byte{}})
 	if err != nil {
 		return err
 	}
@@ -193,13 +196,14 @@ type LatencyRouter struct {
 	searchTimeout          time.Duration
 	pingBroadcasterTimeout time.Duration
 	secret                 string
+	geoRouting             bool
 
 	bmu                    sync.RWMutex
 	closestOrchestratorToB map[string]LatencyCheckResponse
 	orchNodes              map[url.URL]OrchNode
 
 	cmu     sync.RWMutex
-	clients map[url.URL]*LatencyClient
+	clients map[url.URL]*LatencyCheckClient
 }
 
 type OrchNode struct {
@@ -210,10 +214,12 @@ type OrchNode struct {
 }
 
 type LatencyCheckResponse struct {
-	RespTime    int64
-	OrchUri     url.URL
-	UpdatedAt   time.Time
-	DoNotUpdate bool
+	RespTime       float64
+	Distance       float64
+	OrchUri        url.URL
+	UpdatedAt      time.Time
+	DoNotUpdate    bool
+	UseGeoDistance bool
 }
 
 type RouterUpdated struct {
@@ -222,7 +228,7 @@ type RouterUpdated struct {
 	updated             bool
 }
 
-type LatencyClient struct {
+type LatencyCheckClient struct {
 	client net.LatencyCheckClient
 	conn   *grpc.ClientConn
 	err    error
@@ -232,7 +238,7 @@ func CreateOrchNode(uri *url.URL, router_uri *url.URL) OrchNode {
 	return OrchNode{uri: *uri, routerUri: *router_uri, orchInfo: make(map[string]net.OrchestratorInfo)}
 }
 
-func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_time time.Duration, search_timeout time.Duration, ping_broadcaster_timeout time.Duration, round_robin bool) *LatencyRouter {
+func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_time time.Duration, search_timeout time.Duration, ping_broadcaster_timeout time.Duration, round_robin bool, geo_routing bool) *LatencyRouter {
 	router := &LatencyRouter{
 		orchNodes:              make(map[url.URL]OrchNode),
 		testBroadcasterIP:      test_broadcaster_ip,
@@ -240,8 +246,9 @@ func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_t
 		searchTimeout:          search_timeout,
 		pingBroadcasterTimeout: ping_broadcaster_timeout,
 		roundRobin:             round_robin,
+		geoRouting:             geo_routing,
 		closestOrchestratorToB: make(map[string]LatencyCheckResponse),
-		clients:                make(map[url.URL]*LatencyClient),
+		clients:                make(map[url.URL]*LatencyCheckClient),
 	}
 
 	for _, orch_node := range orch_nodes {
@@ -265,6 +272,16 @@ func (r *LatencyRouter) Ping(ctx context.Context, req *net.PingPong) (*net.PingP
 func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string, workDir string, secret string, backgroundUpdate bool) error {
 	r.workDir = workDir
 	r.secret = secret
+	glog.Infof("using working directory " + r.workDir)
+	if r.geoRouting == true {
+		_, err := os.Stat(r.workDir + "/GeoIP2-City.mmdb")
+		if err != nil {
+			glog.Infof("could not stat mmdb file")
+			r.geoRouting = false
+		} else {
+			glog.Infof("using geo routing")
+		}
+	}
 
 	listener, err := gonet.Listen("tcp", uri.Host)
 	if err != nil {
@@ -286,8 +303,8 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 	r.srv = s
 
 	net.RegisterLatencyCheckServer(s, r)
-	net.RegisterOrchestratorServer(s, r)                       //to use the GetOrchestrator rpc client
-	grpc_health_v1.RegisterHealthServer(s, health.NewServer()) //TODO: why is this included?
+	net.RegisterOrchestratorServer(s, r) //to use the GetOrchestrator rpc client
+	//grpc_health_v1.RegisterHealthServer(s, health.NewServer()) //TODO: why is this included?
 
 	errCh := make(chan error)
 	go func() {
@@ -447,7 +464,7 @@ func (r *LatencyRouter) GetOrchestrator(ctx context.Context, req *net.Orchestrat
 			glog.Errorf("%v  failed to return orchestrator info: %v", client_addr.Addr.String(), err.Error())
 			glog.Errorf("%v  failed to get orch info for request  time: %v   ctx err: %v   addr %v", client_addr.Addr.String(), time.Since(st), ctx.Err(), b_addr.Hex())
 		} else {
-			glog.Errorf("%v  request canceled by Broadcaster in %v ", client_addr.Addr.String())
+			glog.Errorf("%v  request canceled by Broadcaster", client_addr.Addr.String())
 		}
 
 		return nil, err
@@ -460,8 +477,7 @@ func (r *LatencyRouter) VerifySig(msg string, sig []byte) bool {
 }
 
 func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *net.OrchestratorRequest, client_addr string) (*net.OrchestratorInfo, error) {
-	totOrch := len(r.orchNodes)
-	if totOrch == 0 {
+	if len(r.orchNodes) == 0 {
 		return nil, errNoOrchestrators
 	}
 
@@ -475,7 +491,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 
 	//check if in cache period
 	//skip if no cached orchestrator, cacheTime not set or the OrchestratorRequest is nil
-	cachedOrchResp, err := r.GetClosestOrchestrator(client_info)
+	cachedOrchResp, err := r.GetCachedClosestOrchestrator(client_info)
 	if err == nil && r.cacheTime > time.Second && req != nil {
 		time_since_cached := time.Now().Sub(cachedOrchResp.UpdatedAt)
 		if time_since_cached < r.cacheTime || cachedOrchResp.DoNotUpdate {
@@ -488,130 +504,25 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 		}
 	}
 
-	//send request to each orch node in separate go routine to concurrently process
-	// results come into latencyCh and errors come in errCh
-	latencyCh := make(chan LatencyCheckResponse, totOrch)
-	errCh := make(chan error, totOrch)
-	totCh := make(chan int, totOrch)
-
-	errCtr := 0
-	respCtr := 0
-	totCtr := 0
-	var responses []LatencyCheckResponse
-	lctx, cancel := context.WithTimeout(ctx, r.searchTimeout)
-	defer cancel()
-
-	for _, orch_node := range r.orchNodes {
-		go func(b_info ClientInfo, orch_node OrchNode) {
-			client := r.GetClient(orch_node.uri)
-			if client == nil {
-				glog.Infof("%v  rpc client is not connected for %v", b_info.addr, orch_node.routerUri.String())
-				errCh <- errors.New("client not available for " + orch_node.uri.String())
-				return
-			}
-			glog.Infof("%v  sending latency check request to orch at %v", b_info.addr, orch_node.routerUri.String())
-			latencyCheckRes, err := client.GetLatency(lctx, &net.BroadcasterLatencyReq{Uri: b_info.addr})
-			if err != nil {
-				errCh <- fmt.Errorf("%v err=%q", orch_node.routerUri, err)
-				return
-			}
-
-			select {
-			case latencyCh <- LatencyCheckResponse{RespTime: latencyCheckRes.GetRespTime(), OrchUri: orch_node.uri, UpdatedAt: time.Now(), DoNotUpdate: false}:
-			default:
-			}
-		}(client_info, orch_node)
-	}
-
-	for {
-		select {
-		case latencyCheckResp := <-latencyCh:
-			responses = append(responses, latencyCheckResp)
-			respCtr++
-
-			glog.Infof("%v  received latency check from %v with ping time of %vms", client_addr, latencyCheckResp.OrchUri.String(), latencyCheckResp.RespTime)
-			//if want to early return, do it here
-			if !r.roundRobin {
-				return r.SendOrchInfo(ctx, client_info, req, responses)
-			}
-			//update tracking total responses
-			totCh <- 1
-		case err := <-errCh:
-			glog.Error(err.Error())
-			errCtr++
-			//update tracking total responses
-			totCh <- 1
-		case <-totCh:
-			totCtr++
-			if totCtr >= len(r.orchNodes) && r.roundRobin {
-				return r.SendOrchInfo(ctx, client_info, req, responses)
-			}
-		case <-lctx.Done():
-			//when the context time limit is complete, return the closest orchestrator so far
-			glog.Infof("%v  searchTimeout expired, sending OrchestratorInfo for responses received (%v of %v)", client_addr, totCtr, len(r.orchNodes))
-			return r.SendOrchInfo(ctx, client_info, req, responses)
-		}
-	}
-}
-
-func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_info ClientInfo, req *net.OrchestratorRequest, responses []LatencyCheckResponse) (*net.OrchestratorInfo, error) {
-	//sort the responses based on ping time
-	sort.Slice(responses, func(i, j int) bool {
-		return responses[i].RespTime < responses[j].RespTime
-	})
-	//if req is nil we are updating ping tests only, no OrchestratorInfo to send back
-	if req == nil {
-		for idx, _ := range responses {
-			glog.Infof("%v  pinging Orchestrator to confirm status", client_info.addr)
-			//rpc ping orch to check its up
-			ping_test, err := r.PingOrchestrator(ctx, client_info.addr, responses[idx].OrchUri)
-			if err != nil {
-				glog.Infof("%v  rpc ping failed %v", client_info.addr, err.Error())
-			}
-			if ping_test {
-				//cache it
-				r.SetClosestOrchestrator(client_info, &responses[idx])
-				//update the other routers
-				go r.updateRouters(client_info.ip, &responses[idx])
-				//return nil because we are just updating ping tests
-				glog.Infof("%v  updated cached orchestrator to %v", client_info.addr, responses[idx].OrchUri.String())
-				return nil, nil
-			}
-
-		}
-		//if rpc ping does not work on any of the Orch nodes update latency check response so background process does not run again
-		r.SetClosestOrchestrator(client_info, &responses[0])
-		return nil, nil
+	if r.geoRouting {
+		return r.GetClosestOrchByDistance(ctx, req, client_info)
 	} else {
-		//get orchestrator info for fastest resp time O
-		for idx, _ := range responses {
-			//get the response from O
-			info, err := r.GetOrchestratorInfo(ctx, client_info, req, responses[idx].OrchUri)
-			if err == nil {
-				//cache it
-				r.SetClosestOrchestrator(client_info, &responses[idx])
-				//update the other routers
-				go r.updateRouters(client_info.ip, &responses[idx])
-				glog.Infof("%v  received all responses, sending orchestrator info for %v  orch addr: %v  priceperunit: %v", client_info.addr, responses[idx].OrchUri.String(), info.GetTranscoder(), info.PriceInfo.GetPricePerUnit())
-
-				return info, err
-			} else {
-				glog.Infof("%v  received all responses, orchestrator failed response for %v  error: %v", client_info.addr, responses[idx].OrchUri.String(), err.Error())
-			}
-		}
-
-		//none of the Os returns a GetOrchestrator response, return no orchestrators error
-		//   when the router cannot connect to an O the searchTimeout will flush to here and return no orchestrators
-		//   connections to O waits 3 seconds.
-		return nil, errNoOrchestrators
+		return r.GetClosestOrchByPing(ctx, req, client_info)
 	}
+
 }
 
-func (r *LatencyRouter) GetClosestOrchestrator(b_ip_addr ClientInfo) (LatencyCheckResponse, error) {
+func (r *LatencyRouter) GetCachedClosestOrchestrator(b_ip_addr ClientInfo) (LatencyCheckResponse, error) {
 	r.bmu.RLock()
 	defer r.bmu.RUnlock()
 	closestOrchWithResp, client_ip_exists := r.closestOrchestratorToB[b_ip_addr.ip]
 	if client_ip_exists {
+		if r.geoRouting {
+			if closestOrchWithResp.Distance == 0 {
+				return LatencyCheckResponse{}, errNoOrchestrators
+			}
+		}
+
 		return closestOrchWithResp, nil
 	} else {
 		return LatencyCheckResponse{}, errNoOrchestrators
@@ -619,7 +530,7 @@ func (r *LatencyRouter) GetClosestOrchestrator(b_ip_addr ClientInfo) (LatencyChe
 }
 
 func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr ClientInfo, resp *LatencyCheckResponse) {
-	if resp.RespTime == 0 {
+	if resp.RespTime == 0 && resp.Distance == 0 {
 		resp.DoNotUpdate = true
 	}
 
@@ -627,7 +538,6 @@ func (r *LatencyRouter) SetClosestOrchestrator(b_ip_addr ClientInfo, resp *Laten
 	defer r.bmu.Unlock()
 	//cache the fastest O to the B
 	r.closestOrchestratorToB[b_ip_addr.ip] = *resp
-
 }
 
 func (r *LatencyRouter) PingOrchestrator(ctx context.Context, broadcaster_ip string, orch_uri url.URL) (bool, error) {
@@ -675,18 +585,19 @@ func (r *LatencyRouter) MonitorBroadcasters() {
 		time.Sleep(1 * time.Minute)
 		for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
 			if lat_chk_resp.DoNotUpdate == false && lat_chk_resp.UpdatedAt.Add(r.cacheTime).Before(time.Now().Add(10*time.Minute)) {
-				glog.Infof("%v  updating ping times for broadcaster ip that will expire in %s", broadcaster_ip, lat_chk_resp.UpdatedAt.Add(r.cacheTime).Sub(time.Now()))
+				glog.Infof("%v  updating routing for broadcaster ip that will expire in %s", broadcaster_ip, lat_chk_resp.UpdatedAt.Add(r.cacheTime).Sub(time.Now()))
 				go r.getOrchestratorInfoClosestToB(context.Background(), nil, broadcaster_ip+":80") //add port so can parse ip addr
 			}
 		}
 	}
 }
 
-func (r *LatencyRouter) GetLatency(ctx context.Context, req *net.BroadcasterLatencyReq) (*net.LatencyCheckRes, error) {
+// grpc methods
+func (r *LatencyRouter) GetLatency(ctx context.Context, req *net.LatencyCheckReq) (*net.LatencyCheckRes, error) {
 	glog.Infof("%v  received latency check request, pinging to provide latency", req.GetUri())
 
 	pingTime := r.SendPing(ctx, req.GetUri())
-	glog.Infof("%v  latency check ping completed in %v milliseconds", req.GetUri(), pingTime)
+	glog.Infof("%v  latency check ping completed in %v microseconds", req.GetUri(), pingTime)
 	return &net.LatencyCheckRes{RespTime: pingTime}, nil
 }
 
@@ -695,13 +606,154 @@ func (r *LatencyRouter) UpdateRouter(ctx context.Context, req *net.ClosestOrches
 	b_uri := req.GetBroadcasterUri()
 	o_uri, _ := url.Parse(req.GetOrchestratorUri())
 	respTime := req.GetRespTime()
+	distance := req.GetDistance()
 
-	r.SetClosestOrchestrator(ClientInfo{ip: b_uri}, &LatencyCheckResponse{RespTime: respTime, OrchUri: *o_uri, UpdatedAt: time.Now(), DoNotUpdate: false})
+	r.SetClosestOrchestrator(ClientInfo{ip: b_uri}, &LatencyCheckResponse{RespTime: respTime, Distance: distance, OrchUri: *o_uri, UpdatedAt: time.Now(), DoNotUpdate: false})
 	glog.Infof("%v  router updated to provide orchestrator %v", b_uri, o_uri)
 	return &net.ClosestOrchestratorRes{Updated: true}, nil
 }
 
-func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) int64 {
+func (r *LatencyRouter) GetClosestOrchByDistance(ctx context.Context, req *net.OrchestratorRequest, client_info ClientInfo) (*net.OrchestratorInfo, error) {
+	var responses []LatencyCheckResponse
+	for _, orch_node := range r.orchNodes {
+		distance := r.GetDistanceFromB(ctx, orch_node.uri.Hostname(), client_info.ip)
+		resp := LatencyCheckResponse{Distance: distance, OrchUri: orch_node.uri, UpdatedAt: time.Now(), DoNotUpdate: false, UseGeoDistance: true}
+		glog.Infof("%v   distance to B for orch %v is %v", client_info.addr, orch_node.uri.String(), distance)
+		responses = append(responses, resp)
+	}
+
+	return r.SendOrchInfo(ctx, client_info, req, responses)
+}
+
+func (r *LatencyRouter) GetClosestOrchByPing(ctx context.Context, req *net.OrchestratorRequest, client_info ClientInfo) (*net.OrchestratorInfo, error) {
+	//send request to each orch node in separate go routine to concurrently process
+	// results come into latencyCh and errors come in errCh
+	totOrch := len(r.orchNodes)
+	latencyCh := make(chan LatencyCheckResponse, totOrch)
+	errCh := make(chan error, totOrch)
+	totCh := make(chan int, totOrch)
+
+	errCtr := 0
+	respCtr := 0
+	totCtr := 0
+	var responses []LatencyCheckResponse
+	lctx, cancel := context.WithTimeout(ctx, r.searchTimeout)
+	defer cancel()
+
+	for _, orch_node := range r.orchNodes {
+		go func(b_info ClientInfo, orch_node OrchNode) {
+			client := r.GetClient(orch_node.uri)
+			if client == nil {
+				glog.Infof("%v  rpc client is not connected for %v", b_info.addr, orch_node.routerUri.String())
+				errCh <- errors.New("client not available for " + orch_node.uri.String())
+				return
+			}
+			glog.Infof("%v  sending latency check request to orch at %v", b_info.addr, orch_node.routerUri.String())
+			latencyCheckRes, err := client.GetLatency(ctx, &net.LatencyCheckReq{Uri: b_info.addr})
+			if err != nil {
+				errCh <- fmt.Errorf("%v err=%q", orch_node.routerUri, err)
+				return
+			}
+
+			select {
+			case latencyCh <- LatencyCheckResponse{RespTime: latencyCheckRes.GetRespTime() / 1000, OrchUri: orch_node.uri, UpdatedAt: time.Now(), DoNotUpdate: false, UseGeoDistance: false}:
+			default:
+			}
+		}(client_info, orch_node)
+	}
+
+	for {
+		select {
+		case latencyCheckResp := <-latencyCh:
+			responses = append(responses, latencyCheckResp)
+			respCtr++
+
+			glog.Infof("%v  received latency check from %v with ping time of %vms", client_info.addr, latencyCheckResp.OrchUri.String(), latencyCheckResp.RespTime)
+			//if want to early return, do it here
+			if !r.roundRobin {
+				return r.SendOrchInfo(ctx, client_info, req, responses)
+			}
+			//update tracking total responses
+			totCh <- 1
+		case err := <-errCh:
+			glog.Error(err.Error())
+			errCtr++
+			//update tracking total responses
+			totCh <- 1
+		case <-totCh:
+			totCtr++
+			if totCtr >= len(r.orchNodes) && r.roundRobin {
+				return r.SendOrchInfo(ctx, client_info, req, responses)
+			}
+		case <-lctx.Done():
+			//when the context time limit is complete, return the closest orchestrator so far
+			glog.Infof("%v  searchTimeout expired, sending OrchestratorInfo for responses received (%v of %v)", client_info.addr, totCtr, len(r.orchNodes))
+			return r.SendOrchInfo(ctx, client_info, req, responses)
+		}
+	}
+
+}
+
+func (r *LatencyRouter) SendOrchInfo(ctx context.Context, client_info ClientInfo, req *net.OrchestratorRequest, responses []LatencyCheckResponse) (*net.OrchestratorInfo, error) {
+	//sort the responses based on ping time
+	if r.geoRouting {
+		sort.Slice(responses, func(i, j int) bool {
+			return responses[i].Distance < responses[j].Distance
+		})
+	} else {
+		sort.Slice(responses, func(i, j int) bool {
+			return responses[i].RespTime < responses[j].RespTime
+		})
+	}
+	//if req is nil we are updating ping tests only, no OrchestratorInfo to send back
+	if req != nil {
+		//get orchestrator info for fastest resp time O
+		for _, resp := range responses {
+			//get the response from O
+			info, err := r.GetOrchestratorInfo(ctx, client_info, req, resp.OrchUri)
+			if err == nil {
+				//cache it
+				r.SetClosestOrchestrator(client_info, &resp)
+				//update the other routers
+				go r.updateRouters(client_info.ip, &resp)
+				glog.Infof("%v  sending orchestrator info for %v  orch addr: %v  priceperunit: %v", client_info.addr, resp.OrchUri.String(), info.GetTranscoder(), info.PriceInfo.GetPricePerUnit())
+
+				return info, err
+			} else {
+				glog.Infof("%v  orchestrator failed response for %v  error: %v", client_info.addr, resp.OrchUri.String(), err.Error())
+			}
+		}
+
+		//none of the Os returns a GetOrchestrator response, return no orchestrators error
+		//   when the router cannot connect to an O the searchTimeout will flush to here and return no orchestrators
+		//   connections to O waits 3 seconds.
+		return nil, errNoOrchestrators
+	} else {
+		for idx, _ := range responses {
+			glog.Infof("%v  pinging Orchestrator to confirm status", client_info.addr)
+			//rpc ping orch to check its up
+			ping_test, err := r.PingOrchestrator(ctx, client_info.addr, responses[idx].OrchUri)
+			if err != nil {
+				glog.Infof("%v  rpc ping failed %v", client_info.addr, err.Error())
+			}
+			if ping_test {
+				//cache it
+				r.SetClosestOrchestrator(client_info, &responses[idx])
+				//update the other routers
+				go r.updateRouters(client_info.ip, &responses[idx])
+				//return nil because we are just updating ping tests
+				glog.Infof("%v  updated cached orchestrator to %v", client_info.addr, responses[idx].OrchUri.String())
+				return nil, nil
+			}
+
+		}
+		//if rpc ping does not work on any of the Orch nodes update latency check response so background process does not run again
+		r.SetClosestOrchestrator(client_info, &responses[0])
+		return nil, nil
+	}
+}
+
+func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) float64 {
 
 	addr_split := strings.Split(b_ip_addr, ":")
 
@@ -719,9 +771,9 @@ func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) int64 {
 		panic(p_err)
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
-	glog.Infof("%v  ping test results:  %vms  %v%% packet loss", b_ip_addr, stats.AvgRtt.Milliseconds(), stats.PacketLoss)
+	glog.Infof("%v  ping test results:  %vms  %v%% packet loss", b_ip_addr, stats.AvgRtt.Microseconds(), stats.PacketLoss)
 	if stats.PacketLoss != 100 {
-		return stats.AvgRtt.Milliseconds()
+		return float64(stats.AvgRtt.Microseconds())
 	} else {
 		start := time.Now()
 		took := int64(0)
@@ -736,13 +788,52 @@ func (r *LatencyRouter) SendPing(ctx context.Context, b_ip_addr string) int64 {
 			took = time.Since(start).Milliseconds()
 		}
 		glog.Infof("%v  icmp ping failed, using backup ping test results:  %vms  error: %s", b_ip_addr, took, err.Error())
-		return time.Since(start).Milliseconds()
+		return float64(time.Since(start).Microseconds())
 	}
 }
 
+func (r *LatencyRouter) GetDistanceFromB(ctx context.Context, orch_ip string, b_ip string) float64 {
+	db, err := geoip2.Open(r.workDir + "/GeoIP2-City.mmdb")
+	if err != nil {
+		glog.Fatal(err)
+	}
+	defer db.Close()
+
+	o_ip := gonet.ParseIP(orch_ip)
+	o_record, err := db.City(o_ip)
+	if err != nil {
+		glog.Infof("%v  failed to parse orch ip for geo distance calc  %v", b_ip, orch_ip)
+		glog.Error(err)
+	}
+	b_record, err := db.City(gonet.ParseIP(b_ip))
+	if err != nil {
+		glog.Infof("%v  failed to parse B ip for geo distance calc  %v", b_ip, orch_ip)
+		glog.Error(err)
+	}
+
+	// Convert degrees to radians
+	lat1Rad := o_record.Location.Latitude * (math.Pi / 180)
+	lon1Rad := o_record.Location.Longitude * (math.Pi / 180)
+	lat2Rad := b_record.Location.Latitude * (math.Pi / 180)
+	lon2Rad := b_record.Location.Longitude * (math.Pi / 180)
+
+	// Radius of the Earth in kilometers
+	radius := 6371.0
+
+	// Haversine formula
+	deltaLat := lat2Rad - lat1Rad
+	deltaLon := lon2Rad - lon1Rad
+	a := math.Pow(math.Sin(deltaLat/2), 2) + math.Cos(lat1Rad)*math.Cos(lat2Rad)*math.Pow(math.Sin(deltaLon/2), 2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	distance := math.Max(radius*c, 1.0)
+
+	return distance
+}
+
 func (r *LatencyRouter) updateRouters(b_ip_addr string, resp *LatencyCheckResponse) {
-	//do not update if RespTime is 0 because the ping failed
-	if resp.RespTime == 0 {
+	glog.Infof("%v  Updating routers", b_ip_addr)
+	//do not update if RespTime and Distance is 0 because the routing failed
+	if resp.RespTime == 0 && resp.Distance == 0 {
 		return
 	}
 	updateCh := make(chan RouterUpdated, len(r.orchNodes))
@@ -755,11 +846,17 @@ func (r *LatencyRouter) updateRouters(b_ip_addr string, resp *LatencyCheckRespon
 		go func(orch_node OrchNode, b_ip_addr string, resp *LatencyCheckResponse) {
 			client := r.GetClient(orch_node.uri)
 			if client != nil {
-				updateRouterRes, _ := client.UpdateRouter(upd_ctx, &net.ClosestOrchestratorReq{BroadcasterUri: b_ip_addr, OrchestratorUri: resp.OrchUri.String(), RespTime: resp.RespTime})
+				updateRouterRes, err := client.UpdateRouter(upd_ctx, &net.ClosestOrchestratorReq{BroadcasterUri: b_ip_addr, OrchestratorUri: resp.OrchUri.String(), RespTime: resp.RespTime, Distance: resp.Distance})
+				if err != nil {
+					glog.Errorf("%v  failed to update router %v", b_ip_addr, orch_node.routerUri.String())
+				}
 				select {
 				case updateCh <- RouterUpdated{b_ip_addr: b_ip_addr, orch_router_ip_addr: orch_node.routerUri.String(), updated: updateRouterRes.GetUpdated()}:
 				default:
+					glog.Error("no response received from updating router")
 				}
+			} else {
+				glog.Errorf("failed to start router client for %v", orch_node.routerUri.String())
 			}
 		}(orch_node, b_ip_addr, resp)
 	}
@@ -790,7 +887,7 @@ func (r *LatencyRouter) MonitorClients() {
 		for _, orch_node := range r.orchNodes {
 			if r.clients[orch_node.uri].err != nil {
 				client, conn, err := startLatencyRouterClient(context.Background(), orch_node.routerUri)
-				r.SetClient(orch_node.uri, LatencyClient{client: client, conn: conn, err: err})
+				r.SetClient(orch_node.uri, LatencyCheckClient{client: client, conn: conn, err: err})
 			}
 		}
 		//save routing json for backup
@@ -801,7 +898,7 @@ func (r *LatencyRouter) MonitorClients() {
 func (r *LatencyRouter) CreateClients() {
 	for _, orch_node := range r.orchNodes {
 		client, conn, err := startLatencyRouterClient(context.Background(), orch_node.routerUri)
-		r.SetClient(orch_node.uri, LatencyClient{client: client, conn: conn, err: err})
+		r.SetClient(orch_node.uri, LatencyCheckClient{client: client, conn: conn, err: err})
 	}
 }
 
@@ -818,7 +915,7 @@ func (r *LatencyRouter) GetClient(orch_uri url.URL) net.LatencyCheckClient {
 			orch_node, orch_exists := r.orchNodes[orch_uri]
 			if orch_exists {
 				client, conn, err := startLatencyRouterClient(context.Background(), orch_node.routerUri)
-				r.SetClient(orch_uri, LatencyClient{client: client, conn: conn, err: err})
+				r.SetClient(orch_uri, LatencyCheckClient{client: client, conn: conn, err: err})
 				return client
 			} else {
 				return nil
@@ -829,7 +926,7 @@ func (r *LatencyRouter) GetClient(orch_uri url.URL) net.LatencyCheckClient {
 	}
 }
 
-func (r *LatencyRouter) SetClient(orch_uri url.URL, client LatencyClient) {
+func (r *LatencyRouter) SetClient(orch_uri url.URL, client LatencyCheckClient) {
 	r.cmu.Lock()
 	defer r.cmu.Unlock()
 	r.clients[orch_uri] = &client
@@ -873,13 +970,14 @@ func (r *LatencyRouter) handleGrafanaData(w http.ResponseWriter, req *http.Reque
 	type GrafanaData struct {
 		Broadcaster  string
 		Orchestrator string
-		RespTime     int64
+		RespTime     float64
+		Distance     float64
 		UpdatedAt    time.Time
 		DoNotUpdate  bool
 	}
 	grafana_data := []GrafanaData{}
 	for b_ip, v := range r.closestOrchestratorToB {
-		grafana_data = append(grafana_data, GrafanaData{Broadcaster: b_ip, Orchestrator: v.OrchUri.Host, RespTime: v.RespTime, UpdatedAt: v.UpdatedAt, DoNotUpdate: v.DoNotUpdate})
+		grafana_data = append(grafana_data, GrafanaData{Broadcaster: b_ip, Orchestrator: v.OrchUri.Host, RespTime: v.RespTime, Distance: v.Distance, UpdatedAt: v.UpdatedAt, DoNotUpdate: v.DoNotUpdate})
 	}
 	// Create a data object to unmarshal JSON into
 	data, err := json.Marshal(grafana_data)

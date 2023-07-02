@@ -20,6 +20,7 @@ require (
 	github.com/livepeer/m3u8 v0.11.1
 	github.com/mattn/go-sqlite3 v1.14.16
 	github.com/olekukonko/tablewriter v0.0.5
+	github.com/oschwald/geoip2-golang v1.9.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/peterbourgon/ff/v3 v3.3.0
 	github.com/pkg/errors v0.9.1
@@ -28,7 +29,7 @@ require (
 	github.com/prometheus/tsdb v0.10.0 // indirect
 	github.com/rjeczalik/notify v0.9.2 // indirect
 	github.com/status-im/keycard-go v0.0.0-20190424133014-d95853db0f48 // indirect
-	github.com/stretchr/testify v1.8.1
+	github.com/stretchr/testify v1.8.4
 	github.com/testcontainers/testcontainers-go v0.12.0
 	github.com/tyler-smith/go-bip39 v1.0.2 // indirect
 	github.com/urfave/cli v1.22.12
