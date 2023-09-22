@@ -33,7 +33,7 @@ func main() {
 	flag.Set("logtostderr", "true")
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-	datadir := flag.String("datadir", "", "Directory that data is stored in")
+	datadir := flag.String("datadir", "", "Directory that data is stored in. Default is /[home]/.lpRouterData")
 	httpAddr := flag.String("httpAddr", "", "Address (IP:port) to bind to for HTTP")
 	serviceAddr := flag.String("serviceAddr", "", "Publicly accessible URI (IP:port or hostname) to receive requests at. All routers need to run on this port. If using Geo Distance, this needs to be an IP address.")
 	dataPort := flag.String("dataPort", "", "Port to serve saved routing data")
