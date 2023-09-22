@@ -46,6 +46,7 @@ func main() {
 	roundRobin := flag.Bool("roundRobin", true, "Ping all orchestrators to get closest orch, returns first orch to respond if set to false")
 	testBroadcasterIP := flag.String("testBroadcasterIP", "", "Input known broadcaster IP address for testing (comma delimited)")
 	backgroundUpdate := flag.Bool("backgroundUpdate", false, "Run this on only one router.  Update ping tests to broadcasters in background process")
+	maxConcurrentUpdates := flag.Int("maxConcurrentUpdates", 5, "number of concurrent background updates to run")
 	geoRouting := flag.Bool("geoRouting", false, "use maxmind db to router requests on distance (save db at /[dataDir]/GeoIP2-City.mmdb)")
 
 	flag.Parse()
@@ -127,7 +128,7 @@ func main() {
 		srv := server.NewLatencyRouter(orch_nodes, *testBroadcasterIP, *cacheTime, *searchTimeout, *pingBroadcasterTimeout, *roundRobin, *geoRouting)
 		glog.Info("Starting livepeer latency based router")
 		go func() {
-			errCh <- srv.Start(uri, serviceURI, dPort, *datadir, *secret, *backgroundUpdate)
+			errCh <- srv.Start(uri, serviceURI, dPort, *datadir, *secret, *backgroundUpdate, *maxConcurrentUpdates)
 		}()
 
 		c := make(chan os.Signal)

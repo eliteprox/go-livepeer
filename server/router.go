@@ -269,7 +269,7 @@ func (r *LatencyRouter) Ping(ctx context.Context, req *net.PingPong) (*net.PingP
 	return &net.PingPong{Value: []byte{}}, nil
 }
 
-func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string, workDir string, secret string, backgroundUpdate bool) error {
+func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string, workDir string, secret string, backgroundUpdate bool, maxConcurrentUpdates int) error {
 	r.workDir = workDir
 	r.secret = secret
 	glog.Infof("using working directory " + r.workDir)
@@ -366,7 +366,7 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 	if backgroundUpdate {
 		go func() {
 			//check if ping should be updated
-			r.MonitorBroadcasters()
+			r.MonitorBroadcasters(maxConcurrentUpdates)
 		}()
 	}
 
@@ -579,14 +579,27 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, client_info Cli
 	return info, nil
 }
 
-func (r *LatencyRouter) MonitorBroadcasters() {
+func (r *LatencyRouter) MonitorBroadcasters(maxConcurrentUpdates int) {
+	var wg sync.WaitGroup
+	funcs := 0
 	glog.Infof("background process started to monitor and update pings to broadcasters, first check is in 1 minute")
 	for {
 		time.Sleep(1 * time.Minute)
 		for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
 			if lat_chk_resp.DoNotUpdate == false && lat_chk_resp.UpdatedAt.Add(r.cacheTime).Before(time.Now().Add(10*time.Minute)) {
 				glog.Infof("%v  updating routing for broadcaster ip that will expire in %s", broadcaster_ip, lat_chk_resp.UpdatedAt.Add(r.cacheTime).Sub(time.Now()))
-				go r.getOrchestratorInfoClosestToB(context.Background(), nil, broadcaster_ip+":80") //add port so can parse ip addr
+				funcs++
+				go func() {
+					wg.Add(1)
+					defer wg.Done()
+
+					r.getOrchestratorInfoClosestToB(context.Background(), nil, broadcaster_ip+":80") //add port so can parse ip addr
+				}()
+				if funcs >= maxConcurrentUpdates {
+					wg.Wait()
+					funcs = 0
+				}
+
 			}
 		}
 	}
