@@ -366,11 +366,17 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 	}()
 
 	if backgroundUpdate {
+
 		go func() {
 			//check if ping should be updated
 			r.MonitorBroadcasters(maxConcurrentUpdates)
 		}()
 	}
+
+	glog.Infof("starting background process to cache OrchestratorInfo requests for each broadcaster")
+	go func() {
+		r.CacheOrchestratorInfo()
+	}()
 
 	//if test ips are specified, start testing
 	if r.testBroadcasterIP != "" {
@@ -611,7 +617,7 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, client_info Cli
 func (r *LatencyRouter) MonitorBroadcasters(maxConcurrentUpdates int) {
 	var wg sync.WaitGroup
 	funcs := 0
-	glog.Infof("background process started to monitor and update pings to broadcasters, first check is in 1 minute")
+	glog.Infof("background process started to monitor and update routing to broadcasters, first check is in 1 minute")
 	for {
 		time.Sleep(1 * time.Minute)
 		for broadcaster_ip, lat_chk_resp := range r.closestOrchestratorToB {
@@ -630,7 +636,12 @@ func (r *LatencyRouter) MonitorBroadcasters(maxConcurrentUpdates int) {
 
 			}
 		}
+	}
+}
 
+func (r *LatencyRouter) CacheOrchestratorInfo() {
+	glog.Infof("background process started to cache orchestrator info every minute")
+	for {
 		for b_addr, b_req := range r.broadcasterReqeuests {
 			for orch_url, _ := range r.orchNodes {
 				orch_info, err := r.GetOrchestratorInfo(context.Background(), ClientInfo{addr: "background update"}, b_req, orch_url)
@@ -639,6 +650,8 @@ func (r *LatencyRouter) MonitorBroadcasters(maxConcurrentUpdates int) {
 				}
 			}
 		}
+
+		time.Sleep(1 * time.Minute)
 	}
 }
 
