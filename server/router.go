@@ -625,10 +625,10 @@ func (r *LatencyRouter) MonitorBroadcasters(maxConcurrentUpdates int) {
 				glog.Infof("%v  updating routing for broadcaster ip that will expire in %s", broadcaster_ip, lat_chk_resp.UpdatedAt.Add(r.cacheTime).Sub(time.Now()))
 				funcs++
 				wg.Add(1)
-				go func() {
-					r.getOrchestratorInfoClosestToB(context.Background(), nil, broadcaster_ip+":80") //add port so can parse ip addr
+				go func(b_addr string) {
+					r.getOrchestratorInfoClosestToB(context.Background(), nil, b_addr+":80") //add port so can parse ip addr
 					wg.Done()
-				}()
+				}(broadcaster_ip)
 				if funcs >= maxConcurrentUpdates {
 					wg.Wait()
 					funcs = 0
