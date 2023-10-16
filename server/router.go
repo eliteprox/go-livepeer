@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
+	"math/big"
 	gonet "net"
 	"net/http"
 	"net/url"
@@ -646,6 +647,8 @@ func (r *LatencyRouter) CacheOrchestratorInfo() {
 			for orch_url, _ := range r.orchNodes {
 				orch_info, err := r.GetOrchestratorInfo(context.Background(), ClientInfo{addr: "background update"}, b_req, orch_url)
 				if err == nil {
+					orch_info.TicketParams.FaceValue = big.NewInt(0).Bytes()
+					orch_info.PriceInfo.PricePerUnit = int64(0)
 					r.orchNodes[orch_url].orchInfo[b_addr] = *orch_info
 				}
 			}
