@@ -12,7 +12,6 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
-	"math/big"
 	gonet "net"
 	"net/http"
 	"net/url"
@@ -198,6 +197,8 @@ type LatencyRouter struct {
 	pingBroadcasterTimeout time.Duration
 	secret                 string
 	geoRouting             bool
+	overrideTranscoder     string
+	overridePricePerUnit   int64
 
 	bmu                    sync.RWMutex
 	closestOrchestratorToB map[string]LatencyCheckResponse
@@ -240,7 +241,7 @@ func CreateOrchNode(uri *url.URL, router_uri *url.URL) OrchNode {
 	return OrchNode{uri: *uri, routerUri: *router_uri, orchInfo: make(map[ethcommon.Address]net.OrchestratorInfo)}
 }
 
-func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_time time.Duration, search_timeout time.Duration, ping_broadcaster_timeout time.Duration, round_robin bool, geo_routing bool) *LatencyRouter {
+func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_time time.Duration, search_timeout time.Duration, ping_broadcaster_timeout time.Duration, round_robin bool, geo_routing bool, override_transcoder string, override_ppu int64) *LatencyRouter {
 	router := &LatencyRouter{
 		orchNodes:              make(map[url.URL]OrchNode),
 		testBroadcasterIP:      test_broadcaster_ip,
@@ -249,6 +250,8 @@ func NewLatencyRouter(orch_nodes []OrchNode, test_broadcaster_ip string, cache_t
 		pingBroadcasterTimeout: ping_broadcaster_timeout,
 		roundRobin:             round_robin,
 		geoRouting:             geo_routing,
+		overrideTranscoder:     override_transcoder,
+		overridePricePerUnit:   override_ppu,
 		closestOrchestratorToB: make(map[string]LatencyCheckResponse),
 		clients:                make(map[url.URL]*LatencyCheckClient),
 		broadcasterReqeuests:   make(map[ethcommon.Address]*net.OrchestratorRequest),
@@ -647,8 +650,15 @@ func (r *LatencyRouter) CacheOrchestratorInfo() {
 			for orch_url, _ := range r.orchNodes {
 				orch_info, err := r.GetOrchestratorInfo(context.Background(), ClientInfo{addr: "background update"}, b_req, orch_url)
 				if err == nil {
-					orch_info.TicketParams.FaceValue = big.NewInt(0).Bytes()
-					orch_info.PriceInfo.PricePerUnit = int64(0)
+
+					if r.overridePricePerUnit > 0 {
+						orch_info.PriceInfo.PricePerUnit = r.overridePricePerUnit
+					}
+
+					if r.overrideTranscoder != "" {
+						orch_info.Transcoder = r.overrideTranscoder
+					}
+
 					r.orchNodes[orch_url].orchInfo[b_addr] = *orch_info
 				}
 			}

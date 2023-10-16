@@ -48,6 +48,8 @@ func main() {
 	backgroundUpdate := flag.Bool("backgroundUpdate", false, "Run this on only one router.  Update ping tests to broadcasters in background process")
 	maxConcurrentUpdates := flag.Int("maxConcurrentUpdates", 5, "number of concurrent background updates to run")
 	geoRouting := flag.Bool("geoRouting", false, "use maxmind db to router requests on distance (save db at /[dataDir]/GeoIP2-City.mmdb)")
+	overrideTranscoder := flag.String("overrideTranscoder", "", "url to override transcoder with from orchestrator (eg https://127.0.0.1:8935)")
+	overridePricePerUnit := flag.Int64("overridePricePerUnit", 0, "pricePerUnit to override OrchestratorInfo PriceInfo returned by orchestrator")
 
 	flag.Parse()
 
@@ -125,7 +127,7 @@ func main() {
 
 	errCh := make(chan error)
 	if *useLatencyToB {
-		srv := server.NewLatencyRouter(orch_nodes, *testBroadcasterIP, *cacheTime, *searchTimeout, *pingBroadcasterTimeout, *roundRobin, *geoRouting)
+		srv := server.NewLatencyRouter(orch_nodes, *testBroadcasterIP, *cacheTime, *searchTimeout, *pingBroadcasterTimeout, *roundRobin, *geoRouting, *overrideTranscoder, *overridePricePerUnit)
 		glog.Info("Starting livepeer latency based router")
 		go func() {
 			errCh <- srv.Start(uri, serviceURI, dPort, *datadir, *secret, *backgroundUpdate, *maxConcurrentUpdates)
