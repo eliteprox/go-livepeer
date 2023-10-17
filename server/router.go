@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
+	"math/big"
 	gonet "net"
 	"net/http"
 	"net/url"
@@ -651,9 +652,9 @@ func (r *LatencyRouter) CacheOrchestratorInfo() {
 				orch_info, err := r.GetOrchestratorInfo(context.Background(), ClientInfo{addr: "background update"}, b_req, orch_url)
 				if err == nil {
 
-					if r.overridePricePerUnit > 0 {
-						orch_info.PriceInfo.PricePerUnit = r.overridePricePerUnit
-					}
+					//override ppp
+					orch_info.TicketParams.FaceValue = big.NewInt(0).Bytes()
+					orch_info.PriceInfo.PricePerUnit = 0
 
 					if r.overrideTranscoder != "" {
 						orch_info.Transcoder = r.overrideTranscoder
