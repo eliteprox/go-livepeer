@@ -651,16 +651,19 @@ func (r *LatencyRouter) CacheOrchestratorInfo() {
 			for orch_url, _ := range r.orchNodes {
 				orch_info, err := r.GetOrchestratorInfo(context.Background(), ClientInfo{addr: "background update"}, b_req, orch_url)
 				if err == nil {
-
-					//override ppp
-					orch_info.TicketParams.FaceValue = big.NewInt(0).Bytes()
-					orch_info.PriceInfo.PricePerUnit = 0
-
+					if r.overridePricePerUnit > -1 {
+						orch_info.PriceInfo.PricePerUnit = r.overridePricePerUnit
+						if r.overridePricePerUnit == 0 {
+							orch_info.TicketParams.FaceValue = big.NewInt(0).Bytes()
+						}
+					}
 					if r.overrideTranscoder != "" {
 						orch_info.Transcoder = r.overrideTranscoder
 					}
 
+					r.bmu.Lock()
 					r.orchNodes[orch_url].orchInfo[b_addr] = *orch_info
+					r.bmu.Unlock()
 				}
 			}
 		}

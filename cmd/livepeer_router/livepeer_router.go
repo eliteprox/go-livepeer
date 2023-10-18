@@ -49,7 +49,7 @@ func main() {
 	maxConcurrentUpdates := flag.Int("maxConcurrentUpdates", 5, "number of concurrent background updates to run")
 	geoRouting := flag.Bool("geoRouting", false, "use maxmind db to router requests on distance (save db at /[dataDir]/GeoIP2-City.mmdb)")
 	overrideTranscoder := flag.String("overrideTranscoder", "", "url to override transcoder with from orchestrator (eg https://127.0.0.1:8935)")
-	overridePricePerUnit := flag.Int64("overridePricePerUnit", 0, "pricePerUnit to override OrchestratorInfo PriceInfo returned by orchestrator")
+	overridePricePerUnit := flag.Int64("overridePricePerUnit", -1, "pricePerUnit to override OrchestratorInfo PriceInfo returned by orchestrator")
 
 	flag.Parse()
 
