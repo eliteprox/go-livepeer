@@ -13,7 +13,7 @@ require (
 	github.com/jaypipes/pcidb v1.0.0
 	github.com/livepeer/go-tools v0.0.0-20220805063103-76df6beb6506
 	github.com/livepeer/livepeer-data v0.7.5-0.20231004073737-06f1f383fb18
-	github.com/eliteprox/lpms v0.0.0-20231102131146-fe7b31c
+	github.com/livepeer/lpms v0.0.0-20231002131146-663c62246a3c
 	github.com/livepeer/m3u8 v0.11.1
 	github.com/mattn/go-sqlite3 v1.14.16
 	github.com/olekukonko/tablewriter v0.0.5
@@ -124,3 +124,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.0 // indirect
 )
+
+replace github.com/livepeer/lpms v0.0.0-20231002131146-663c62246a3c => github.com/eliteprox/lpms v0.0.0-20231002131146-663c62246a3c
