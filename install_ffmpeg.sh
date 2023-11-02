@@ -194,11 +194,16 @@ EXTRA_FFMPEG_LDFLAGS="$EXTRA_LDFLAGS"
 # all flags which should be present for production build, but should be replaced/removed for debug build
 DEV_FFMPEG_FLAGS=""
 
+NETINT=false
+if [ -d "$ROOT/libxcoder_logan" ]; then
+  NETINT=true
+fi
+
 if [[ "$BUILDOS" == "darwin" && "$GOOS" == "darwin" ]]; then
   EXTRA_FFMPEG_LDFLAGS="$EXTRA_FFMPEG_LDFLAGS -framework CoreFoundation -framework Security"
 elif [[ "$GOOS" == "windows" ]]; then
   EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid --enable-filter=scale_cuda,signature_cuda,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc"
-elif [[ -e "/usr/local/cuda/lib64" ]]; then
+elif [ -d "/usr/local/cuda/lib64" ] && [ "$NETINT" = false ]; then
   echo "CUDA SDK detected, building with GPU support"
   EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-nonfree --enable-cuda-nvcc --enable-libnpp --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid --enable-filter=scale_npp,signature_cuda,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc"
   if [[ "$GOARCH" == "amd64" && ! -e "${ROOT}/compiled/lib/libtensorflow_framework.so" ]]; then
