@@ -125,4 +125,4 @@ require (
 	howett.net/plist v1.0.0 // indirect
 )
 
-replace github.com/livepeer/lpms v0.0.0-20231002131146-663c62246a3c => github.com/eliteprox/lpms v0.0.0-20231002131146-663c62246a3c
+replace github.com/livepeer/lpms v0.0.0-20231002131146-663c62246a3c => github.com/eliteprox/lpms v0.0.0-20231102050725-fe7b31c04522
