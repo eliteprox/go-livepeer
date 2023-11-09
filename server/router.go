@@ -538,7 +538,6 @@ func (r *LatencyRouter) GetCachedOrchInfoForB(b_addr ethcommon.Address, orch_url
 			cached_info := r.orchNodes[orch_url].orchInfo[b_addr]
 			glog.Infof("sending cached orchestrator info")
 			return &cached_info, nil
-
 		}
 	}
 
@@ -612,7 +611,7 @@ func (r *LatencyRouter) GetOrchestratorInfo(ctx context.Context, client_info Cli
 
 	info, err := client.GetOrchestrator(cctx, req)
 	if err != nil {
-		glog.Errorf("%v  could not get OrchestratorInfo from %v, err: %s", client_info.addr, orch_uri.String(), err.Error())
+		glog.Errorf("%v  could not get OrchestratorInfo from %v, err: %s, addr: %s", client_info.addr, orch_uri.String(), err.Error(), ethcommon.BytesToAddress(req.Address).Hex())
 		return nil, err
 	}
 
@@ -663,6 +662,10 @@ func (r *LatencyRouter) CacheOrchestratorInfo() {
 
 					r.bmu.Lock()
 					r.orchNodes[orch_url].orchInfo[b_addr] = *orch_info
+					r.bmu.Unlock()
+				} else {
+					r.bmu.Lock()
+					delete(r.orchNodes[orch_url].orchInfo, b_addr)
 					r.bmu.Unlock()
 				}
 			}
