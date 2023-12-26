@@ -73,18 +73,19 @@ type LivepeerNode struct {
 	Database *common.DB
 
 	// Transcoder public fields
-	SegmentChans       map[ManifestID]SegmentChan
-	Recipient          pm.Recipient
-	SelectionAlgorithm common.SelectionAlgorithm
-	OrchestratorPool   common.OrchestratorPool
-	OrchPerfScore      *common.PerfScore
-	OrchSecret         string
-	Transcoder         Transcoder
-	TranscoderManager  *RemoteTranscoderManager
-	Balances           *AddressBalances
-	Capabilities       *Capabilities
-	AutoAdjustPrice    bool
-	AutoSessionLimit   bool
+	SegmentChans         map[ManifestID]SegmentChan
+	Recipient            pm.Recipient
+	SelectionAlgorithm   common.SelectionAlgorithm
+	OrchestratorPool     common.OrchestratorPool
+	OrchPerfScore        *common.PerfScore
+	OrchSecret           string
+	Transcoder           Transcoder
+	TranscoderManager    *RemoteTranscoderManager
+	Balances             *AddressBalances
+	Capabilities         *Capabilities
+	ExternalCapabilities *ExternalCapabilities
+	AutoAdjustPrice      bool
+	AutoSessionLimit     bool
 	// Broadcaster public fields
 	Sender pm.Sender
 
@@ -94,6 +95,7 @@ type LivepeerNode struct {
 	storageMutex   *sync.RWMutex
 	// Transcoder private fields
 	priceInfo    map[string]*big.Rat
+	jobPriceInfo map[string]*ExternalCapabilities
 	serviceURI   url.URL
 	segmentMutex *sync.RWMutex
 }
@@ -101,17 +103,22 @@ type LivepeerNode struct {
 // NewLivepeerNode creates a new Livepeer Node. Eth can be nil.
 func NewLivepeerNode(e eth.LivepeerEthClient, wd string, dbh *common.DB) (*LivepeerNode, error) {
 	rand.Seed(time.Now().UnixNano())
+	extCapPrices := make(map[string]*ExternalCapabilities)
+	extCapPrices["default"] = NewExternalCapabilities()
+
 	return &LivepeerNode{
-		Eth:             e,
-		WorkDir:         wd,
-		Database:        dbh,
-		AutoAdjustPrice: true,
-		SegmentChans:    make(map[ManifestID]SegmentChan),
-		segmentMutex:    &sync.RWMutex{},
-		Capabilities:    &Capabilities{capacities: map[Capability]int{}},
-		priceInfo:       make(map[string]*big.Rat),
-		StorageConfigs:  make(map[string]*transcodeConfig),
-		storageMutex:    &sync.RWMutex{},
+		Eth:                  e,
+		WorkDir:              wd,
+		Database:             dbh,
+		AutoAdjustPrice:      true,
+		SegmentChans:         make(map[ManifestID]SegmentChan),
+		segmentMutex:         &sync.RWMutex{},
+		Capabilities:         &Capabilities{capacities: map[Capability]int{}},
+		ExternalCapabilities: NewExternalCapabilities(),
+		priceInfo:            make(map[string]*big.Rat),
+		jobPriceInfo:         extCapPrices,
+		StorageConfigs:       make(map[string]*transcodeConfig),
+		storageMutex:         &sync.RWMutex{},
 	}, nil
 }
 
@@ -178,4 +185,50 @@ func (n *LivepeerNode) GetCurrentCapacity() int {
 	defer n.TranscoderManager.RTmutex.Unlock()
 	_, totalCapacity, _ := n.TranscoderManager.totalLoadAndCapacity()
 	return totalCapacity
+}
+
+func (n *LivepeerNode) SetPriceForExternalCapability(senderEthAddress string, extCapability string, price *big.Rat) {
+
+	if _, ok := n.jobPriceInfo[senderEthAddress]; !ok {
+		senderEthAddress = "default"
+	}
+
+	n.jobPriceInfo[senderEthAddress].Capabilities[extCapability].Price = price
+}
+
+func (n *LivepeerNode) GetPriceForExternalCapability(senderEthAddress string, extCapability string) *big.Rat {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	senderPrices, ok := n.jobPriceInfo[senderEthAddress]
+	if !ok {
+		senderPrices = n.jobPriceInfo["default"]
+	}
+
+	if extCapInfo, ok := senderPrices.Capabilities[extCapability]; ok {
+		return extCapInfo.Price
+	}
+
+	return nil
+}
+
+func (n *LivepeerNode) GetPriceForJob(senderEthAddress string, extCapability string) *big.Rat {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	senderPrices, ok := n.jobPriceInfo[senderEthAddress]
+	if !ok {
+		return nil
+	}
+
+	jobPrice := big.NewRat(0, 1)
+
+	if extCapInfo, ok := senderPrices.Capabilities[extCapability]; ok {
+		jobPrice = new(big.Rat).Add(extCapInfo.Price, jobPrice)
+	} else {
+		//if price not set for sender fall back to default price
+		if extCapInfoDefault, ok := n.jobPriceInfo["default"].Capabilities[extCapability]; ok {
+			jobPrice = new(big.Rat).Add(extCapInfoDefault.Price, jobPrice)
+		}
+	}
+
+	return jobPrice
 }

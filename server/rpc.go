@@ -60,6 +60,11 @@ type Orchestrator interface {
 	DebitFees(addr ethcommon.Address, manifestID core.ManifestID, price *net.PriceInfo, pixels int64)
 	Capabilities() *net.Capabilities
 	AuthToken(sessionID string, expiration int64) *net.AuthToken
+	ExternalCapabilities() *core.ExternalCapabilities
+	GetUrlForCapability(extCapability string) string
+	CheckExternalCapacity(extCapability string) error
+	FreeExternalCapacity(extCapability string) error
+	JobPriceInfo(sender ethcommon.Address, jobId core.ManifestID, jobCapabiliy string) (*net.PriceInfo, error)
 }
 
 // Balance describes methods for a session's balance maintenance
@@ -196,6 +201,10 @@ func StartTranscodeServer(orch Orchestrator, bind string, mux *http.ServeMux, wo
 		net.RegisterTranscoderServer(s, &lp)
 		lp.transRPC.HandleFunc("/transcodeResults", lp.TranscodeResults)
 	}
+	//API for external jobs
+	lp.transRPC.HandleFunc("/processJob", lp.ProcessJob)
+	lp.transRPC.HandleFunc("/getToken", lp.GetJobToken)
+	lp.transRPC.HandleFunc("/registerCapability", lp.RegisterCapability)
 
 	cert, key, err := getCert(orch.ServiceURI(), workDir)
 	if err != nil {

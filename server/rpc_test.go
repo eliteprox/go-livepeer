@@ -75,6 +75,7 @@ type stubOrchestrator struct {
 	offchain     bool
 	caps         *core.Capabilities
 	authToken    *net.AuthToken
+	jobPriceInfo *net.PriceInfo
 }
 
 func (r *stubOrchestrator) ServiceURI() *url.URL {
@@ -183,6 +184,19 @@ func (r *stubOrchestrator) TranscoderResults(job int64, res *core.RemoteTranscod
 func (r *stubOrchestrator) TranscoderSecret() string {
 	return ""
 }
+func (r *stubOrchestrator) ExternalCapabilities() *core.ExternalCapabilities {
+	return nil
+}
+func (r *stubOrchestrator) CheckExternalCapacity(extCaps []string) error {
+	return r.sessCapErr
+}
+func (r *stubOrchestrator) FreeExternalCapacity(extCaps []string) error {
+	return nil
+}
+func (r *stubOrchestrator) JobPriceInfo(sender ethcommon.Address, jobId core.ManifestID, jobCapabilities []string) (*net.PriceInfo, error) {
+	return r.priceInfo, nil
+}
+
 func stubBroadcaster2() *stubOrchestrator {
 	return newStubOrchestrator() // lazy; leverage subtyping for interface commonalities
 }
@@ -1357,6 +1371,19 @@ func (o *mockOrchestrator) AuthToken(sessionID string, expiration int64) *net.Au
 		return args.Get(0).(*net.AuthToken)
 	}
 	return nil
+}
+
+func (o *mockOrchestrator) ExternalCapabilities() *core.ExternalCapabilities {
+	return nil
+}
+func (o *mockOrchestrator) CheckExternalCapacity(extCaps []string) error {
+	return nil
+}
+func (o *mockOrchestrator) FreeExternalCapacity(extCaps []string) error {
+	return nil
+}
+func (o *mockOrchestrator) JobPriceInfo(sender ethcommon.Address, jobId core.ManifestID, jobCapabilities []string) (*net.PriceInfo, error) {
+	return &net.PriceInfo{PricePerUnit: 0, PixelsPerUnit: 1}, nil
 }
 
 func defaultTicketParams() *net.TicketParams {
