@@ -31,12 +31,14 @@ const jobRegisterCapabilityHdr = "Livepeer-Job-Register-Capability"
 
 type JobSender struct {
 	Addr string `json:"addr"`
+	Msg  string `json:"msg"`
 	Sig  string `json:"sig"`
 }
 
 type JobToken struct {
 	Token         string            `json:"token"`
 	JobId         string            `json:"jobId"`
+	Capability    string            `json:"capability"`
 	Expiration    int64             `json:"expiration"`
 	SenderAddress *JobSender        `json:"senderAddress,omitempty"`
 	TicketParams  *net.TicketParams `json:"ticketParams,omitempty"`
@@ -107,7 +109,7 @@ func (h *lphttp) GetJobToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Eth address invalid, must have valid eth address in %v header", jobEthAddressHdr), http.StatusBadRequest)
 	}
 
-	if !orch.VerifySig(ethcommon.HexToAddress(jobSenderAddr.Addr), jobSenderAddr.Addr, []byte(jobSenderAddr.Sig)) {
+	if !orch.VerifyPersonalSig(jobSenderAddr.Addr, jobSenderAddr.Sig, jobSenderAddr.Msg) {
 		glog.Infof("generate token failed, eth address signature failed remoteAddr=%v", remoteAddr)
 		http.Error(w, "eth address request signature could not be verified", http.StatusBadRequest)
 	}
@@ -158,6 +160,10 @@ func (h *lphttp) ProcessJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if r.ContentLength > int64(common.MaxSegSize) {
+		http.Error(w, "request size too large", http.StatusBadRequest)
+	}
+
 	orch := h.orchestrator
 
 	remoteAddr := getRemoteAddr(r)
@@ -188,9 +194,27 @@ func (h *lphttp) ProcessJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := orch.ProcessPayment(ctx, payment, core.ManifestID(jobReq.ID)); err != nil {
+		clog.Errorf(ctx, "error processing payment: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	clog.V(common.SHORT).Infof(ctx, "Received job, sending for processing id=%v sender=%v ip=%v", jobReq.ID, sender.Hex(), remoteAddr)
-	extReq := []byte(fmt.Sprintf(`{"request":%v, "parameters":%v}`, jobReq.Request, jobReq.Parameters))
-	req, err := http.NewRequestWithContext(ctx, "POST", jobReq.CapabilityUrl, bytes.NewBuffer(extReq))
+	r.Body = http.MaxBytesReader(w, r.Body, int64(common.MaxSegSize))
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		glog.Errorf("error reading body")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", jobReq.CapabilityUrl, bytes.NewReader(body))
+	reqHdr := make(map[string]string)
+	reqHdr["request"] = jobReq.Request
+	reqHdr["parameters"] = jobReq.Parameters
+	reqHdrStr, _ := json.Marshal(reqHdr)
+	req.Header.Add("Livepeer-Job", fmt.Sprintf("%v", reqHdrStr))
 
 	resp, err := sendReqWithTimeout(req, time.Duration(jobReq.Timeout)*time.Second)
 	if err != nil || resp.StatusCode > 399 {
@@ -228,7 +252,7 @@ func verifyJobCreds(ctx context.Context, orch Orchestrator, jobCreds string, req
 
 	ctx = clog.AddVal(ctx, "job_id", jobData.ID)
 
-	if !orch.VerifySig(requestedBy, jobData.Request, []byte(jobData.Sig)) {
+	if !orch.VerifyPersonalSig(requestedBy.Hex(), jobData.Sig, jobCreds) {
 		clog.Errorf(ctx, "Sig check failed")
 		return nil, ctx, errSegSig
 	}

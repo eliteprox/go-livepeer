@@ -6,7 +6,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/golang/glog"
 )
 
 var (
@@ -23,6 +25,29 @@ func VerifySig(addr ethcommon.Address, msg, sig []byte) bool {
 	}
 
 	return recovered == addr
+}
+
+// source https://gist.github.com/dcb9/385631846097e1f59e3cba3b1d42f3ed#file-eth_sign_verify-go
+func VerifyPersonalSig(addr, sigHex, msg string) bool {
+	sig, err := hexutil.Decode(sigHex)
+	if err != nil {
+		glog.Infof("signature decoding failed addr=%v sig=%v", addr, sigHex)
+		return false
+	}
+
+	msgb := accounts.TextHash([]byte(msg))
+	if sig[crypto.RecoveryIDOffset] == 27 || sig[crypto.RecoveryIDOffset] == 28 {
+		sig[crypto.RecoveryIDOffset] -= 27 // Transform yellow paper V from 27/28 to 0/1
+	}
+
+	recovered, err := crypto.SigToPub(msgb, sig)
+	if err != nil {
+		return false
+	}
+
+	recoveredAddr := crypto.PubkeyToAddress(*recovered)
+
+	return addr == recoveredAddr.Hex()
 }
 
 func ecrecover(msg, sig []byte) (ethcommon.Address, error) {

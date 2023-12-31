@@ -65,6 +65,7 @@ type Orchestrator interface {
 	CheckExternalCapacity(extCapability string) error
 	FreeExternalCapacity(extCapability string) error
 	JobPriceInfo(sender ethcommon.Address, jobId core.ManifestID, jobCapabiliy string) (*net.PriceInfo, error)
+	VerifyPersonalSig(string, string, string) bool
 }
 
 // Balance describes methods for a session's balance maintenance

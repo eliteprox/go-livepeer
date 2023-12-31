@@ -71,6 +71,13 @@ func (orch *orchestrator) VerifySig(addr ethcommon.Address, msg string, sig []by
 	return lpcrypto.VerifySig(addr, crypto.Keccak256([]byte(msg)), sig)
 }
 
+func (orch *orchestrator) VerifyPersonalSig(addr, sig, msg string) bool {
+	if orch.node == nil || orch.node.Eth == nil {
+		return true
+	}
+	return lpcrypto.VerifyPersonalSig(addr, sig, msg)
+}
+
 func (orch *orchestrator) Address() ethcommon.Address {
 	return orch.address
 }
