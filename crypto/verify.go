@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -21,14 +22,18 @@ var (
 func VerifySig(addr ethcommon.Address, msg, sig []byte) bool {
 	recovered, err := ecrecover(msg, sig)
 	if err != nil {
+		glog.Errorf("error on ecrecover: %v", err.Error())
 		return false
 	}
-
+	//REMOVE glog.Infof("sig tested: %v", hexutil.Encode(sig))
+	//REMOVE glog.Infof("verifysig addr computed: %v", recovered.Hex())
+	//REMOVE glog.Infof("verifysig addr: %v", addr.Hex())
 	return recovered == addr
 }
 
 // source https://gist.github.com/dcb9/385631846097e1f59e3cba3b1d42f3ed#file-eth_sign_verify-go
 func VerifyPersonalSig(addr, sigHex, msg string) bool {
+	ethAddr := ethcommon.HexToAddress(addr)
 	sig, err := hexutil.Decode(sigHex)
 	if err != nil {
 		glog.Infof("signature decoding failed addr=%v sig=%v", addr, sigHex)
@@ -47,7 +52,7 @@ func VerifyPersonalSig(addr, sigHex, msg string) bool {
 
 	recoveredAddr := crypto.PubkeyToAddress(*recovered)
 
-	return addr == recoveredAddr.Hex()
+	return ethAddr.Hex() == recoveredAddr.Hex()
 }
 
 func ecrecover(msg, sig []byte) (ethcommon.Address, error) {
@@ -62,7 +67,7 @@ func ecrecover(msg, sig []byte) (ethcommon.Address, error) {
 
 	v := sig[64]
 	if v != byte(27) && v != byte(28) {
-		return ethcommon.Address{}, errors.New("signature v value must be 27 or 28")
+		return ethcommon.Address{}, errors.New(fmt.Sprintf("signature v value must be 27 or 28: %v", v))
 	}
 
 	// crypto.SigToPub() expects signature v value = 0/1

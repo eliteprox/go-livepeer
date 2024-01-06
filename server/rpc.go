@@ -61,11 +61,12 @@ type Orchestrator interface {
 	Capabilities() *net.Capabilities
 	AuthToken(sessionID string, expiration int64) *net.AuthToken
 	ExternalCapabilities() *core.ExternalCapabilities
-	GetUrlForCapability(extCapability string) string
-	CheckExternalCapacity(extCapability string) error
-	FreeExternalCapacity(extCapability string) error
+	RegisterExternalCapability(extCapabilityHdr string) (*core.ExternalCapability, error)
+	GetUrlForCapability(extCapId string) string
+	CheckExternalCapacity(extCapId string) error
+	FreeExternalCapacity(extCapId string) error
 	JobPriceInfo(sender ethcommon.Address, jobId core.ManifestID, jobCapabiliy string) (*net.PriceInfo, error)
-	VerifyPersonalSig(string, string, string) bool
+	VerifyPersonalSig(addr, sig, msg string) bool
 }
 
 // Balance describes methods for a session's balance maintenance

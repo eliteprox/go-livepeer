@@ -168,6 +168,7 @@ func (t *Ticket) WinProbRat() *big.Rat {
 // arguments as described in the Solidity documentation
 // See: https://solidity.readthedocs.io/en/v0.4.25/units-and-global-variables.html#mathematical-and-cryptographic-functions
 func (t *Ticket) Hash() ethcommon.Hash {
+	//REMOVE glog.Infof("hash of ticket: %v", crypto.Keccak256Hash(t.flatten()).Hex())
 	return crypto.Keccak256Hash(t.flatten())
 }
 

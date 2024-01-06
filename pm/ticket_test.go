@@ -9,6 +9,25 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestFlatten(t *testing.T) {
+	assert := assert.New(t)
+	fv, _ := new(big.Int).SetString("2000000000000000", 10)
+	wp, _ := new(big.Int).SetString("2836906186314246787877489132712853742405114624308193818966710857000000000", 10)
+	ticket := Ticket{
+		Recipient:              ethcommon.HexToAddress("0x3b28a7d785356dc67c7970666747e042305bfb79"),
+		Sender:                 ethcommon.HexToAddress("0xee2b537e47d0f14bf1e3a9aa0afb7b34b0f30012"),
+		RecipientRandHash:      ethcommon.HexToHash("0x95bb0a266ce58a0eaa11f0a39b527e561ea413a41fa315fb9fbe1493c18b1e48"),
+		SenderNonce:            1,
+		FaceValue:              fv,
+		WinProb:                wp,
+		CreationRound:          int64(3238),
+		CreationRoundBlockHash: ethcommon.Hash(ethcommon.FromHex("0x713fa9d8818c848704014db93e7b2a13d6997152b2b3b367acf5e028123c15cf"))}
+
+	flatten := ticket.flatten()
+
+	assert.Equal(ethcommon.Hash(ethcommon.FromHex("0x0597e53812d9a83cc22f138789d891c695177c60075df2f820b8d8f68801a156")).Bytes(), flatten)
+}
+
 func TestEV(t *testing.T) {
 	assert := assert.New(t)
 

@@ -101,21 +101,23 @@ func (orch *orchestrator) CheckCapacity(mid ManifestID) error {
 func (orch *orchestrator) GetUrlForCapability(extCapability string) string {
 	for _, capability := range orch.ExternalCapabilities().Capabilities {
 		if capability.Name == extCapability {
-			return capability.Url.RequestURI()
+			return capability.Url
 		}
 	}
 
 	return ""
 }
 
-func (orch *orchestrator) CheckExternalCapacity(extCapability string) error {
-	capJobCnt := orch.node.ExternalCapabilities.Capabilities[extCapability].Load
-	capMax := orch.node.ExternalCapabilities.Capabilities[extCapability].Capacity
+func (orch *orchestrator) CheckExternalCapacity(extCapId string) error {
+	capId := ExternalCapabilityId(extCapId)
+	glog.Infof("external capability: %+v", orch.node.ExternalCapabilities.Capabilities[capId])
+	capJobCnt := orch.node.ExternalCapabilities.Capabilities[capId].Load
+	capMax := orch.node.ExternalCapabilities.Capabilities[capId].Capacity
 	if capJobCnt < capMax {
-		orch.node.ExternalCapabilities.Capabilities[extCapability].mu.Lock()
-		defer orch.node.ExternalCapabilities.Capabilities[extCapability].mu.Unlock()
+		orch.node.ExternalCapabilities.Capabilities[capId].mu.Lock()
+		defer orch.node.ExternalCapabilities.Capabilities[capId].mu.Unlock()
 
-		orch.node.ExternalCapabilities.Capabilities[extCapability].Load++
+		orch.node.ExternalCapabilities.Capabilities[capId].Load++
 	} else {
 		return ErrOrchCap
 	}
@@ -124,16 +126,17 @@ func (orch *orchestrator) CheckExternalCapacity(extCapability string) error {
 	return nil
 }
 
-func (orch *orchestrator) FreeExternalCapacity(extCapability string) error {
-	capJobCnt := orch.node.ExternalCapabilities.Capabilities[extCapability].Load
-	capMax := orch.node.ExternalCapabilities.Capabilities[extCapability].Capacity
-	if capJobCnt < capMax {
-		orch.node.ExternalCapabilities.Capabilities[extCapability].mu.Lock()
-		defer orch.node.ExternalCapabilities.Capabilities[extCapability].mu.Unlock()
+func (orch *orchestrator) FreeExternalCapacity(extCapId string) error {
+	capId := ExternalCapabilityId(extCapId)
+	capJobCnt := orch.node.ExternalCapabilities.Capabilities[capId].Load
 
-		orch.node.ExternalCapabilities.Capabilities[extCapability].Load--
+	if capJobCnt > 0 {
+		orch.node.ExternalCapabilities.Capabilities[capId].mu.Lock()
+		defer orch.node.ExternalCapabilities.Capabilities[capId].mu.Unlock()
+
+		orch.node.ExternalCapabilities.Capabilities[capId].Load--
 	} else {
-		return errors.New("could not free capacity")
+		return errors.New("could not free capacity, 0 jobs in progress")
 	}
 
 	//capacity released for capabilities
@@ -334,6 +337,7 @@ func (orch *orchestrator) JobPriceInfo(sender ethcommon.Address, jobId ManifestI
 		return nil, nil
 	}
 
+	glog.Infof("getting price for capability=%v, sender=%v, jobId=%v", jobCapability, sender.Hex(), jobId)
 	jobPrice, err := orch.jobPriceInfo(sender, jobId, jobCapability)
 	if err != nil {
 		return nil, err
@@ -346,6 +350,7 @@ func (orch *orchestrator) JobPriceInfo(sender ethcommon.Address, jobId ManifestI
 }
 
 func (orch *orchestrator) jobPriceInfo(sender ethcommon.Address, jobId ManifestID, jobCapability string) (*big.Rat, error) {
+
 	basePrice := orch.node.GetPriceForJob(sender.Hex(), jobCapability)
 
 	// If there is already a fixed price for the given session, use this price
@@ -353,6 +358,7 @@ func (orch *orchestrator) jobPriceInfo(sender ethcommon.Address, jobId ManifestI
 		if balances, ok := orch.node.Balances.balances[sender]; ok {
 			fixedPrice := balances.FixedPrice(ManifestID(jobId))
 			if fixedPrice != nil {
+				glog.Info("returning fixed price for job %v of %v for %v capability ", jobId, fixedPrice.RatString(), jobCapability)
 				return fixedPrice, nil
 			}
 		}
@@ -462,6 +468,18 @@ func (orch *orchestrator) Capabilities() *net.Capabilities {
 		return nil
 	}
 	return orch.node.Capabilities.ToNetCapabilities()
+}
+
+func (orch *orchestrator) RegisterExternalCapability(extCapHdr string) (*ExternalCapability, error) {
+	extCap, err := orch.node.ExternalCapabilities.RegisterCapability(extCapHdr)
+	if err != nil {
+		return nil, err
+	}
+
+	//setup default price
+	orch.node.SetPriceForExternalCapability("default", extCap.Name, extCap.Price)
+
+	return extCap, nil
 }
 
 func (orch *orchestrator) ExternalCapabilities() *ExternalCapabilities {

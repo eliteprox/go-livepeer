@@ -161,7 +161,7 @@ func (sm *LocalSenderMonitor) MaxFloat(addr ethcommon.Address) (*big.Int, error)
 	defer sm.mu.Unlock()
 
 	sm.ensureCache(addr)
-	glog.Infof("getting max float")
+
 	return sm.maxFloat(addr)
 }
 
