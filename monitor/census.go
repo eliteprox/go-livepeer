@@ -173,6 +173,9 @@ type (
 		mMaxGasPrice           *stats.Float64Measure
 		mTranscodingPrice      *stats.Float64Measure
 
+		// Metrics for calling rewards
+		mRewardCallError *stats.Int64Measure
+
 		// Metrics for pixel accounting
 		mMilPixelsProcessed *stats.Float64Measure
 
@@ -253,7 +256,7 @@ func InitCensus(nodeType NodeType, version string) {
 	census.kSegClassName = tag.MustNewKey("seg_class_name")
 	census.ctx, err = tag.New(ctx, tag.Insert(census.kNodeType, string(nodeType)), tag.Insert(census.kNodeID, NodeID))
 	if err != nil {
-		glog.Fatal("Error creating context", err)
+		glog.Exit("Error creating context", err)
 	}
 	census.mHTTPClientTimeout1 = stats.Int64("http_client_timeout_1", "Number of times HTTP connection was dropped before transcoding complete", "tot")
 	census.mHTTPClientTimeout2 = stats.Int64("http_client_timeout_2", "Number of times HTTP connection was dropped before transcoded segments was sent back to client", "tot")
@@ -318,6 +321,9 @@ func InitCensus(nodeType NodeType, version string) {
 	census.mMaxGasPrice = stats.Float64("max_gas_price", "MaxGasPrice", "gwei")
 	census.mTranscodingPrice = stats.Float64("transcoding_price", "TranscodingPrice", "wei")
 
+	// Metrics for calling rewards
+	census.mRewardCallError = stats.Int64("reward_call_errors", "RewardCallError", "tot")
+
 	// Metrics for pixel accounting
 	census.mMilPixelsProcessed = stats.Float64("mil_pixels_processed", "MilPixelsProcessed", "mil pixels")
 
@@ -346,7 +352,7 @@ func InitCensus(nodeType NodeType, version string) {
 		tag.Insert(compiler, runtime.Compiler), tag.Insert(goarch, runtime.GOARCH), tag.Insert(goos, runtime.GOOS),
 		tag.Insert(goversion, runtime.Version()), tag.Insert(livepeerversion, version))
 	if err != nil {
-		glog.Fatal("Error creating tagged context", err)
+		glog.Exit("Error creating tagged context", err)
 	}
 	baseTags := []tag.Key{census.kNodeID, census.kNodeType}
 	baseTagsWithManifestID := baseTags
@@ -780,6 +786,15 @@ func InitCensus(nodeType NodeType, version string) {
 			Aggregation: view.LastValue(),
 		},
 
+		// Metrics for calling rewards
+		{
+			Name:        "reward_call_errors",
+			Measure:     census.mRewardCallError,
+			Description: "Errors when calling rewards",
+			TagKeys:     baseTags,
+			Aggregation: view.Sum(),
+		},
+
 		// Metrics for fast verification
 		{
 			Name:        "fast_verification_done",
@@ -829,7 +844,7 @@ func InitCensus(nodeType NodeType, version string) {
 
 	// Register the views
 	if err := view.Register(views...); err != nil {
-		glog.Fatalf("Failed to register views: %v", err)
+		glog.Exitf("Failed to register views: %v", err)
 	}
 	registry := rprom.NewRegistry()
 	registry.MustRegister(rprom.NewProcessCollector(rprom.ProcessCollectorOpts{}))
@@ -839,7 +854,7 @@ func InitCensus(nodeType NodeType, version string) {
 		Registry:  registry,
 	})
 	if err != nil {
-		glog.Fatalf("Failed to create the Prometheus stats exporter: %v", err)
+		glog.Exitf("Failed to create the Prometheus stats exporter: %v", err)
 	}
 
 	// Register the Prometheus exporters as a stats exporter.
@@ -847,7 +862,7 @@ func InitCensus(nodeType NodeType, version string) {
 	stats.Record(ctx, mVersions.M(1))
 	ctx, err = tag.New(census.ctx, tag.Insert(census.kErrorCode, "LostSegment"))
 	if err != nil {
-		glog.Fatal("Error creating context", err)
+		glog.Exit("Error creating context", err)
 	}
 	if !unitTestMode {
 		go census.timeoutWatcher(ctx)
@@ -855,6 +870,9 @@ func InitCensus(nodeType NodeType, version string) {
 	Exporter = pe
 	// init metrics values
 	SetTranscodersNumberAndLoad(0, 0, 0)
+	stats.Record(census.ctx, census.mWinningTicketsRecv.M(int64(0)))
+	stats.Record(census.ctx, census.mCurrentSessions.M(int64(0)))
+	stats.Record(census.ctx, census.mValueRedeemed.M(float64(0)))
 }
 
 /*
@@ -1144,7 +1162,6 @@ func SetTranscodersNumberAndLoad(load, capacity, number int) {
 }
 
 func SegmentEmerged(ctx context.Context, nonce, seqNo uint64, profilesNum int, dur float64) {
-	clog.V(logLevel).Infof(ctx, "Logging SegmentEmerged... duration=%v", dur)
 	if err := stats.RecordWithTags(census.ctx,
 		manifestIDTagAndIP(ctx),
 		census.mSegmentEmergedUnprocessed.M(1)); err != nil {
@@ -1171,7 +1188,6 @@ func (cen *censusMetricsCounter) segmentEmerged(nonce, seqNo uint64, profilesNum
 }
 
 func SourceSegmentAppeared(ctx context.Context, nonce, seqNo uint64, manifestID, profile string, recordingEnabled bool) {
-	clog.V(logLevel).Infof(ctx, "Logging SourceSegmentAppeared... profile=%s", profile)
 	census.segmentSourceAppeared(ctx, nonce, seqNo, profile, recordingEnabled)
 }
 
@@ -1190,8 +1206,6 @@ func (cen *censusMetricsCounter) segmentSourceAppeared(ctx context.Context, nonc
 }
 
 func SegmentUploaded(ctx context.Context, nonce, seqNo uint64, uploadDur time.Duration, uri string) {
-	clog.V(logLevel).Infof(ctx, "Logging SegmentUploaded... dur=%s", uploadDur)
-
 	if err := stats.RecordWithTags(census.ctx,
 		manifestIDTag(ctx,
 			tag.Insert(census.kOrchestratorURI, uri)),
@@ -1206,8 +1220,6 @@ func SegmentUploaded(ctx context.Context, nonce, seqNo uint64, uploadDur time.Du
 }
 
 func SegmentDownloaded(ctx context.Context, nonce, seqNo uint64, downloadDur time.Duration) {
-	clog.V(logLevel).Infof(ctx, "Logging SegmentDownloaded... dur=%s", downloadDur)
-
 	if err := stats.RecordWithTags(census.ctx,
 		manifestIDTag(ctx),
 		census.mSegmentDownloaded.M(1),
@@ -1217,7 +1229,6 @@ func SegmentDownloaded(ctx context.Context, nonce, seqNo uint64, downloadDur tim
 }
 
 func SegSceneClassificationResult(ctx context.Context, seqNo uint64, class string, prob float64) {
-	clog.V(logLevel).Infof(ctx, "Logging SegSceneClassificationResult... class=%s prob=%v", class, prob)
 	if err := stats.RecordWithTags(census.ctx,
 		manifestIDTag(ctx, tag.Insert(census.kSegClassName, class)),
 		census.mSegmentClassProb.M(prob)); err != nil {
@@ -1226,7 +1237,6 @@ func SegSceneClassificationResult(ctx context.Context, seqNo uint64, class strin
 }
 
 func SegSceneClassificationDone(ctx context.Context, seqNo uint64) {
-	clog.V(logLevel).Infof(ctx, "Logging SegSceneClassificationDone... seqno=%v", seqNo)
 	if err := stats.RecordWithTags(census.ctx,
 		manifestIDTag(ctx),
 		census.mSceneClassification.M(1)); err != nil {
@@ -1300,7 +1310,6 @@ func SegmentUploadFailed(ctx context.Context, nonce, seqNo uint64, code SegmentU
 			code = SegmentUploadErrorSessionEnded
 		}
 	}
-	clog.Errorf(ctx, "Logging SegmentUploadFailed... code=%v reason='%s'", code, err.Error())
 
 	census.segmentUploadFailed(ctx, nonce, seqNo, code, permanent, uri)
 }
@@ -1329,7 +1338,6 @@ func (cen *censusMetricsCounter) segmentUploadFailed(ctx context.Context, nonce,
 func SegmentTranscoded(ctx context.Context, nonce, seqNo uint64, sourceDur time.Duration, transcodeDur time.Duration, profiles string,
 	trusted, verified bool) {
 
-	clog.V(logLevel).Infof(ctx, "Logging SegmentTranscode nonce=%d seqNo=%d dur=%s trusted=%v verified=%v", nonce, seqNo, transcodeDur, trusted, verified)
 	census.segmentTranscoded(nonce, seqNo, sourceDur, transcodeDur, profiles, trusted, verified)
 }
 
@@ -1355,7 +1363,6 @@ func (cen *censusMetricsCounter) segmentTranscoded(nonce, seqNo uint64, sourceDu
 }
 
 func SegmentTranscodeFailed(ctx context.Context, subType SegmentTranscodeError, nonce, seqNo uint64, err error, permanent bool) {
-	clog.Errorf(ctx, "Logging SegmentTranscodeFailed subtype=%v err=%q", subType, err.Error())
 	census.segmentTranscodeFailed(ctx, nonce, seqNo, subType, permanent)
 }
 
@@ -1456,7 +1463,6 @@ func newAverager(manifestID string) *segmentsAverager {
 }
 
 func StreamCreated(manifestID string, nonce uint64) {
-	glog.V(logLevel).Infof("Logging StreamCreated... nonce=%d manifestID=%s", nonce, manifestID)
 	census.streamCreated(manifestID, nonce)
 }
 
@@ -1468,7 +1474,6 @@ func (cen *censusMetricsCounter) streamCreated(manifestID string, nonce uint64) 
 }
 
 func StreamStarted(nonce uint64) {
-	glog.V(logLevel).Infof("Logging StreamStarted... nonce=%d", nonce)
 	census.streamStarted(nonce)
 }
 
@@ -1477,7 +1482,6 @@ func (cen *censusMetricsCounter) streamStarted(nonce uint64) {
 }
 
 func StreamEnded(ctx context.Context, nonce uint64) {
-	clog.V(logLevel).Infof(ctx, "Logging StreamEnded... nonce=%d", nonce)
 	census.streamEnded(nonce)
 }
 
@@ -1677,6 +1681,16 @@ func TranscodingPrice(sender string, price *big.Rat) {
 
 			glog.Errorf("Error recording metrics err=%q", err)
 		}
+	}
+}
+
+// RewardCallError records an error from reward calling
+func RewardCallError(sender string) {
+	if err := stats.RecordWithTags(census.ctx,
+		[]tag.Mutator{tag.Insert(census.kSender, sender)},
+		census.mRewardCallError.M(1)); err != nil {
+
+		glog.Errorf("Error recording metrics err=%q", err)
 	}
 }
 

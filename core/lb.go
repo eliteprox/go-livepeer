@@ -14,22 +14,16 @@ import (
 var ErrTranscoderBusy = errors.New("TranscoderBusy")
 var ErrTranscoderStopped = errors.New("TranscoderStopped")
 
-// This is for temporary convenience - as we currently
-// only support loading a single detection model.
-var DetectorProfile ffmpeg.DetectorProfile
-
 type TranscoderSession interface {
 	Transcoder
 	Stop()
 }
 
 type newTranscoderFn func(device string) TranscoderSession
-type newTranscoderWithDetectorFn func(detector ffmpeg.DetectorProfile, device string) (TranscoderSession, error)
 
 type LoadBalancingTranscoder struct {
 	transcoders   []string // Slice of device IDs
 	newT          newTranscoderFn
-	newDetectorT  newTranscoderWithDetectorFn
 	detectorModel string
 
 	// The following fields need to be protected by the mutex `mu`
@@ -53,30 +47,31 @@ func (lb *LoadBalancingTranscoder) EndTranscodingSession(sessionId string) {
 	}
 }
 
-func NewLoadBalancingTranscoder(devices []string, newTranscoderFn newTranscoderFn,
-	newTranscoderWithDetectorFn newTranscoderWithDetectorFn) Transcoder {
+func NewLoadBalancingTranscoder(devices []string, newTranscoderFn newTranscoderFn) Transcoder {
 	return &LoadBalancingTranscoder{
-		transcoders:  devices,
-		newT:         newTranscoderFn,
-		newDetectorT: newTranscoderWithDetectorFn,
-		mu:           &sync.RWMutex{},
-		load:         make(map[string]int),
-		sessions:     make(map[string]*transcoderSession),
+		transcoders: devices,
+		newT:        newTranscoderFn,
+		mu:          &sync.RWMutex{},
+		load:        make(map[string]int),
+		sessions:    make(map[string]*transcoderSession),
 	}
 }
 
 func (lb *LoadBalancingTranscoder) Transcode(ctx context.Context, md *SegTranscodingMetadata) (*TranscodeData, error) {
-
 	lb.mu.RLock()
 	session, exists := lb.sessions[string(md.AuthToken.SessionId)]
 	lb.mu.RUnlock()
 	if exists {
 		clog.V(common.DEBUG).Infof(ctx, "LB: Using existing transcode session for key=%s", session.key)
+		if md != nil && md.SegmentParameters != nil && md.SegmentParameters.ForceSessionReinit {
+			// Broadcaster requested HW session reinitialization
+			lb.mu.Lock()
+			session.transcoder.Stop()
+			session.transcoder = lb.newT(lb.leastLoaded())
+			lb.mu.Unlock()
+		}
 	} else {
 		var err error
-		if len(md.DetectorProfiles) > 0 {
-			md.DetectorEnabled = true
-		}
 		session, err = lb.createSession(clog.Clone(context.Background(), ctx), md)
 		if err != nil {
 			return nil, err
@@ -103,20 +98,9 @@ func (lb *LoadBalancingTranscoder) createSession(ctx context.Context, md *SegTra
 	key := job + "_" + transcoder
 	costEstimate := calculateCost(md.Profiles)
 
-	// create the transcoder - with AI capabilities, if required by local or stream configuration
-	var lpmsSession TranscoderSession
-	setEffectiveDetectorConfig(md)
-	if md.DetectorEnabled && len(md.DetectorProfiles) == 1 {
-		var err error
-		lpmsSession, err = lb.newDetectorT(md.DetectorProfiles[0], transcoder)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		lpmsSession = lb.newT(transcoder)
-	}
+	// create the transcoder
 	session := &transcoderSession{
-		transcoder:  lpmsSession,
+		transcoder:  lb.newT(transcoder),
 		key:         key,
 		done:        make(chan struct{}),
 		stop:        make(chan struct{}),

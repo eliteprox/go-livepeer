@@ -13,13 +13,13 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: checkout
-        uses: actions/checkout@v3.2.0
+        uses: actions/checkout@v4.1.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_branch }}
 
       - name: Download artifacts from build stage
-        uses: dawidd6/action-download-artifact@v2
+        uses: dawidd6/action-download-artifact@v3
         with:
           workflow: build.yaml
           name: release-artifacts

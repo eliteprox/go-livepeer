@@ -666,27 +666,6 @@ func TestCreateRTMPStreamHandlerWebhook(t *testing.T) {
 	osinfo = params.RecordOS.GetInfo()
 	assert.Equal(int32(net.OSInfo_S3), int32(osinfo.StorageType))
 	assert.Equal("http://record.store", osinfo.S3Info.Host)
-
-	// set scene classification detector profiles
-	ts18 := makeServer(`{"manifestID":"a", "detection": {"freq": 5, "sampleRate": 10, "sceneClassification": [{"name": "soccer"}]}}`)
-	defer ts18.Close()
-	params = createSid(u).(*core.StreamParameters)
-	detectorProf := ffmpeg.DSceneAdultSoccer
-	detectorProf.SampleRate = 10
-	expectedDetection := core.DetectionConfig{
-		Freq:               5,
-		SelectedClassNames: []string{"soccer"},
-		Profiles: []ffmpeg.DetectorProfile{
-			&detectorProf,
-		},
-	}
-	assert.Equal(expectedDetection, params.Detection, "Did not have matching detector config")
-
-	// do not create stream if detector class is unknown
-	ts19 := makeServer(`{"manifestID":"a", "detection": {"freq": 5, "sampleRate": 10, "sceneClassification": [{"name": "Unknown class"}]}}`)
-	defer ts19.Close()
-	sid = createSid(u)
-	assert.Nil(sid)
 }
 
 func TestCreateRTMPStreamHandler(t *testing.T) {
@@ -1224,10 +1203,8 @@ func TestRegisterConnection(t *testing.T) {
 
 func TestBroadcastSessionManagerWithStreamStartStop(t *testing.T) {
 	goleakOptions := common.IgnoreRoutines()
-	// allow enough time for the transcode end goroutines to finish
-	goleakOptions = append(goleakOptions, goleak.MaxSleepInterval(5*time.Second), goleak.MaxRetryAttempts(1000))
 	defer goleak.VerifyNone(t, goleakOptions...)
-	assert := assert.New(t)
+	assert := require.New(t)
 
 	s, cancel := setupServerWithCancel()
 	defer func() {

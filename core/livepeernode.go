@@ -18,10 +18,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/pm"
 
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/eth"
+	lpmon "github.com/livepeer/go-livepeer/monitor"
 )
 
 var ErrTranscoderAvail = errors.New("ErrTranscoderUnavailable")
@@ -71,15 +73,18 @@ type LivepeerNode struct {
 	Database *common.DB
 
 	// Transcoder public fields
-	SegmentChans      map[ManifestID]SegmentChan
-	Recipient         pm.Recipient
-	OrchestratorPool  common.OrchestratorPool
-	OrchSecret        string
-	Transcoder        Transcoder
-	TranscoderManager *RemoteTranscoderManager
-	Balances          *AddressBalances
-	Capabilities      *Capabilities
-	AutoAdjustPrice   bool
+	SegmentChans       map[ManifestID]SegmentChan
+	Recipient          pm.Recipient
+	SelectionAlgorithm common.SelectionAlgorithm
+	OrchestratorPool   common.OrchestratorPool
+	OrchPerfScore      *common.PerfScore
+	OrchSecret         string
+	Transcoder         Transcoder
+	TranscoderManager  *RemoteTranscoderManager
+	Balances           *AddressBalances
+	Capabilities       *Capabilities
+	AutoAdjustPrice    bool
+	AutoSessionLimit   bool
 	// Broadcaster public fields
 	Sender pm.Sender
 
@@ -153,4 +158,24 @@ func (n *LivepeerNode) SetMaxFaceValue(maxfacevalue *big.Int) {
 	defer n.mu.Unlock()
 
 	n.Recipient.SetMaxFaceValue(maxfacevalue)
+}
+
+func (n *LivepeerNode) SetMaxSessions(s int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	MaxSessions = s
+
+	//update metrics reporting
+	if lpmon.Enabled {
+		lpmon.MaxSessions(MaxSessions)
+	}
+
+	glog.Infof("Updated session limit to %d", MaxSessions)
+}
+
+func (n *LivepeerNode) GetCurrentCapacity() int {
+	n.TranscoderManager.RTmutex.Lock()
+	defer n.TranscoderManager.RTmutex.Unlock()
+	_, totalCapacity, _ := n.TranscoderManager.totalLoadAndCapacity()
+	return totalCapacity
 }

@@ -216,7 +216,7 @@ func currentRoundHandler(client eth.LivepeerEthClient) http.Handler {
 			return
 		}
 
-		respondOk(w, currentRound.Bytes())
+		respondOk(w, []byte(currentRound.String()))
 	}))
 }
 
@@ -574,6 +574,27 @@ func (s *LivepeerServer) setPriceForBroadcaster() http.Handler {
 			}
 		} else {
 			respond400(w, "Node must be orchestrator node to set price for broadcaster")
+		}
+	})
+}
+
+func (s *LivepeerServer) setMaxSessions() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		frmMaxSessions := r.FormValue("maxSessions")
+		if frmMaxSessions == "auto" {
+			s.LivepeerNode.AutoSessionLimit = true
+			s.LivepeerNode.SetMaxSessions(s.LivepeerNode.GetCurrentCapacity())
+			respondOk(w, []byte("Max sessions set to auto\n"))
+		} else if maxSessions, err := strconv.Atoi(frmMaxSessions); err == nil {
+			if maxSessions > 0 {
+				s.LivepeerNode.AutoSessionLimit = false
+				s.LivepeerNode.SetMaxSessions(maxSessions)
+				respondOk(w, []byte(fmt.Sprintf("Max sessions set to %d\n", maxSessions)))
+			} else {
+				respond400(w, "Max Sessions must be 'auto' or greater than zero")
+			}
+		} else {
+			respond400(w, err.Error())
 		}
 	})
 }

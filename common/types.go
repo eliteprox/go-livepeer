@@ -3,12 +3,12 @@ package common
 import (
 	"context"
 	"encoding/json"
-	"math/big"
-	"net/url"
-
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/go-livepeer/net"
 	"github.com/livepeer/m3u8"
+	"math/big"
+	"net/url"
+	"sync"
 )
 
 type RemoteTranscoderInfo struct {
@@ -103,6 +103,15 @@ type OrchestratorPool interface {
 	SizeWith(ScorePred) int
 }
 
+type SelectionAlgorithm interface {
+	Select(addrs []ethcommon.Address, stakes map[ethcommon.Address]int64, prices map[ethcommon.Address]float64, perfScores map[ethcommon.Address]float64) ethcommon.Address
+}
+
+type PerfScore struct {
+	Mu     sync.Mutex
+	Scores map[ethcommon.Address]float64
+}
+
 func ScoreAtLeast(minScore float32) ScorePred {
 	return func(score float32) bool {
 		return score >= minScore
@@ -127,14 +136,4 @@ type OrchestratorStore interface {
 
 type RoundsManager interface {
 	LastInitializedRound() *big.Int
-}
-
-type SceneClassificationResult struct {
-	Name        string  `json:"name"`
-	Probability float64 `json:"probability"`
-}
-type DetectionWebhookRequest struct {
-	ManifestID          string                      `json:"manifestID"`
-	SeqNo               uint64                      `json:"seqNo"`
-	SceneClassification []SceneClassificationResult `json:"sceneClassification"`
 }

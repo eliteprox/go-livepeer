@@ -1,5 +1,94 @@
 # Changelog
 
+## v0.7.2
+
+### Breaking Changes 🚨🚨
+
+- None
+
+#### General
+- [#2938](https://github.com/livepeer/go-livepeer/pull/2938) Add `tmp` folder to `.gitignore` (@rickstaa)
+
+#### Broadcaster
+- [#2896](https://github.com/livepeer/go-livepeer/pull/2896) Use FPS of 60, rather than 120 for cost estimation (@thomshutt)
+- [#2948](https://github.com/livepeer/go-livepeer/pull/2948) Remove logging from metrics methods (@thomshutt)
+
+#### Orchestrator
+- [#2911](https://github.com/livepeer/go-livepeer/pull/2911) Set default price with livepeer_cli option 20 (@eliteprox)
+- [#2928](https://github.com/livepeer/go-livepeer/pull/2928) Added `startupAvailabilityCheck` param to skip the availability check on startup (@stronk-dev)
+- [#2905](https://github.com/livepeer/go-livepeer/pull/2905) Add `reward_call_errors` Prometheus metric (@rickstaa)
+- [#2958](https://github.com/livepeer/go-livepeer/pull/2958) Return parsing error when failing to parse B prices (@thomshutt)
+
+#### Transcoder
+
+### Bug Fixes 🐞
+- [#2914](https://github.com/livepeer/go-livepeer/pull/2914) fixes a bug that prevented `pricePerBroadcaster` JSON files with line-breaks from being parsed correctly (@rickstaa).
+
+## v0.7.1
+
+### Breaking Changes 🚨🚨
+
+### Features ⚒
+
+#### Broadcaster
+- [#2884](https://github.com/livepeer/go-livepeer/pull/2884) Detect resolution change and reinit hw session (@leszko)
+- [#2883](https://github.com/livepeer/go-livepeer/pull/2883) Skip transcoding when empty profiles were sent to B (@leszko)
+
+#### General
+- [#2882](https://github.com/livepeer/go-livepeer/pull/2882) Add parameter to force HW Session Reinit (@leszko)
+
+## v0.7.0
+
+### Breaking Changes 🚨🚨
+
+### Features ⚒
+
+#### Broadcaster
+- [#2837](https://github.com/livepeer/go-livepeer/pull/2837) Set a floor of 1.5s for accepted Orchestrator response times, regardless of segment length (@thomshutt)
+- [#2839](https://github.com/livepeer/go-livepeer/pull/2839) Add Orchestrator blocklist CLI parameter (@mjh1)
+- [#2729](https://github.com/livepeer/go-livepeer/pull/2729) Switch to a custom error type for max transcode attempts (@mjh1)
+- [#2844](https://github.com/livepeer/go-livepeer/pull/2844) Exit early during verification when Orchestrator's address is nil (@ad-astra-video)
+- [#2842](https://github.com/livepeer/go-livepeer/pull/2842) Add Keys to public logs (@ad-astra-video)
+- [#2872](https://github.com/livepeer/go-livepeer/pull/2872) New Selection Algorithm (@leszko)
+
+#### Orchestrator
+- [#2781](https://github.com/livepeer/go-livepeer/pull/2781) Add automatic session limit and set max sessions with livepeer_cli (@eliteprox)
+- [#2848](https://github.com/livepeer/go-livepeer/pull/2848) Improve Transcode Quality (@leszko)
+- [#2851](https://github.com/livepeer/go-livepeer/pull/2851) Change scaling to `scale_npp` instead of `scale_cuda` (Linux-only) (@leszko)
+
+#### General
+- [#2843](https://github.com/livepeer/go-livepeer/pull/2843) Increase log level of payment creation (@iameli)
+- [#2850](https://github.com/livepeer/go-livepeer/pull/2850) Update default ports (@ad-astra-video)
+- [#2859](https://github.com/livepeer/go-livepeer/pull/2859) Update currentRound endpoint to return string instead of bytes (@ad-astra-video)
+- [#2878](https://github.com/livepeer/go-livepeer/pull/2878) Fix Mist JSON (@leszko)
+
+### Bug Fixes 🐞
+- [#2820](https://github.com/livepeer/go-livepeer/pull/2820) Fix segfault in setting a pricePerBroadcaster (@stronk-dev)
+
+#### CLI
+- [#2825](https://github.com/livepeer/go-livepeer/pull/2825) Enable quieter logging with -v=2 and -v=1 (@iameli)
+
+## v0.6.0
+
+### Breaking Changes 🚨🚨
+- [#2821](https://github.com/livepeer/go-livepeer/pull/2821) Bump nvidia/cuda base version for docker builds (@stronk-dev and @hjpotter92)
+
+### Features ⚒
+
+#### Broadcaster
+- [#2827](https://github.com/livepeer/go-livepeer/pull/2827) Introduce configurable Orchestrator blocklist (@mjh1)
+
+#### General
+- [#2758](https://github.com/livepeer/go-livepeer/pull/2758) Accept only active Os to receive traffic and redeem tickets (@leszko)
+- [#2775](https://github.com/livepeer/go-livepeer/pull/2775) Reduce number of ETH RPC calls during block polling (@leszko)
+- [#2815](https://github.com/livepeer/go-livepeer/pull/2815) Add new logging methods to publish a set of public logs (@emranemran)
+
+### Bug Fixes 🐞
+- [#2759](https://github.com/livepeer/go-livepeer/pull/2759) Parse keystore address without 0x prefix, fix parse error logging
+- [#2764](https://github.com/livepeer/go-livepeer/pull/2764) Call session end asynchronously to avoid unnecessary blocking (@mjh1)
+- [#2777](https://github.com/livepeer/go-livepeer/pull/2777) Only write session end log message if session exists (@mjh1)
+- [#2804](https://github.com/livepeer/go-livepeer/pull/2804) Bump livepeer-data and go version due to breaking interface change (@victorges)
+
 ## v0.5.38
 
 ### Breaking Changes 🚨🚨
@@ -295,7 +384,7 @@ This release also includes a darwin arm64 build and darwin/linux binaries compil
 
 *February 11th 2022*
 
-This release supports connecting to Arbitrum Mainnet using the `-network arbitrum-one-mainnet` flag after the L1 Ethereum block 14207040 which is the block at which [LIP-73 i.e. the Confluence upgrade](https://github.com/livepeer/LIPs/blob/master/LIPs/LIP-73.md#specification) will be activated. Prior to this block, running the node wtih `-network arbitrum-one-mainnet` will result in a startup error so it is recommended to wait until after block 14207040 to run the node with the `-network arbitrum-one-mainnet` flag. **We strongly encourage all node operators to upgrade to this release so they can connect to Arbitrum Mainnet after the LIP-73 block**.
+This release supports connecting to Arbitrum Mainnet using the `-network arbitrum-one-mainnet` flag after the L1 Ethereum block 14207040 which is the block at which [LIP-73 i.e. the Confluence upgrade](https://github.com/livepeer/LIPs/blob/master/LIPs/LIP-73.md#specification) will be activated. Prior to this block, running the node with `-network arbitrum-one-mainnet` will result in a startup error so it is recommended to wait until after block 14207040 to run the node with the `-network arbitrum-one-mainnet` flag. **We strongly encourage all node operators to upgrade to this release so they can connect to Arbitrum Mainnet after the LIP-73 block**.
 
 Additional updates in this release include various improvements to compatibility with Arbitrum networks as well as the initial groundwork for enabling H.265/HEVC encoding/decoding and VP8/VP9 decoding jobs on the network.
 
@@ -579,7 +668,7 @@ Thanks to everyone that submitted bug reports and assisted in testing!
 
 *August 10 2021*
 
-This release includes another gas price monitoring fix to address additional cases where Ethereum JSON-RPC providers occassionally return really low gas prices for the `eth_gasPrice` RPC call, automatic replacements for pending transactions that timeout, fixes for broadcaster stream recording, support for downloading stream recordings as mp4 files as well as variety of other bug fixes and enhancements.
+This release includes another gas price monitoring fix to address additional cases where Ethereum JSON-RPC providers occasionally return really low gas prices for the `eth_gasPrice` RPC call, automatic replacements for pending transactions that timeout, fixes for broadcaster stream recording, support for downloading stream recordings as mp4 files as well as variety of other bug fixes and enhancements.
 
 In addition to the gas price monitoring fix and support for automatic replacements for pending transactions that timeout, a few additional configuration options are introduced to give node operators more control over gas prices and transactions:
 
@@ -639,7 +728,7 @@ Thanks to everyone that submitted bug reports and assisted in testing!
 
 *May 18 2021*
 
-This release includes an important gas price monitoring fix that addresses cases where Ethereum JSON-RPC providers occassionally return really low gas prices for the `eth_gasPrice` RPC call, reductions in the gas cost for staking actions (under certain circumstances) using `livepeer_cli`  and improvements to split orchestrator and transcoder setups that help remote transcoders retain streams. We strongly recommend all orchestrator and transcoder operators to upgrade to this version as soon as possible to access this latest set of bug fixes and improvements.
+This release includes an important gas price monitoring fix that addresses cases where Ethereum JSON-RPC providers occasionally return really low gas prices for the `eth_gasPrice` RPC call, reductions in the gas cost for staking actions (under certain circumstances) using `livepeer_cli`  and improvements to split orchestrator and transcoder setups that help remote transcoders retain streams. We strongly recommend all orchestrator and transcoder operators to upgrade to this version as soon as possible to access this latest set of bug fixes and improvements.
 
 Thanks to everyone that submitted bug reports and assisted in testing!
 

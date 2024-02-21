@@ -14,36 +14,56 @@ concurrency:
 
 jobs:
   linux-build:
-    name: Build binaries for ${{ matrix.platform.name }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.platform.runner }}
+    name: Build binaries for ${{ matrix.target.GOOS }}-${{ matrix.target.type }}-${{ matrix.target.GOARCH }}
+    runs-on: ${{ matrix.target.runner }}
     container:
-      image: ubuntu:18.04
+      image: ${{ matrix.target.container }}
+      env:
+        DEBIAN_FRONTEND: noninteractive
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - arm64
-          - amd64
-        platform:
-          - name: linux
-            runner: ubuntu-latest
-          - name: windows
-            runner: ubuntu-latest
-        exclude:
-          - platform:
-              name: windows
-            arch: arm64
+        target:
+          - GOOS: linux
+            GOARCH: amd64
+            runner: ubuntu-20.04
+            container: ubuntu:20.04
+            type: cpu
+
+          - GOOS: linux
+            GOARCH: arm64
+            runner: ubuntu-20.04
+            container: ubuntu:20.04
+            type: cpu
+
+          - GOOS: linux
+            GOARCH: amd64
+            runner: ubuntu-20.04
+            container: livepeerci/cuda:11.7.1-cudnn8-devel-ubuntu20.04
+            type: gpu
+
+          - GOOS: linux
+            GOARCH: arm64
+            runner: ubuntu-20.04
+            container: livepeerci/cuda:11.7.1-cudnn8-devel-ubuntu20.04
+            type: gpu
+
+          - GOOS: windows
+            GOARCH: amd64
+            runner: ubuntu-20.04
+            container: ubuntu:22.04
+            type: cpu
 
     steps:
       - name: Setup ubuntu container
         run: |
           apt update
           apt install -yqq build-essential make software-properties-common
-          add-apt-repository -y ppa:git-core/ppa
-          apt update && apt install -yqq git zip unzip zlib1g-dev zlib1g
+          add-apt-repository -y ppa:git-core/candidate
+          apt update && apt install -yqq git zip unzip zlib1g-dev zlib1g yasm
 
       - name: Check out code
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@v4.1.1
         with:
           fetch-depth: 0
           # Check https://github.com/livepeer/go-livepeer/pull/1891
@@ -52,10 +72,9 @@ jobs:
 
       - name: Set up go
         id: go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.17
-          go-version-file: go.mod
+          go-version: 1.20.4
           cache: true
           cache-dependency-path: go.sum
 
@@ -63,35 +82,38 @@ jobs:
         id: cache-ffmpeg
         uses: actions/cache@v3
         with:
-          path: /github/home/compiled
-          key: ${{ runner.os }}-${{ matrix.platform.name }}-${{ matrix.arch }}-ffmpeg-${{ hashFiles('**/install_ffmpeg.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.platform.name }}-${{ matrix.arch }}-ffmpeg-
-
-      - name: Cache binaries
-        uses: actions/cache@v3
-        with:
-          path: ~/build
-          key: ${{ runner.os }}-${{ matrix.platform.name }}-${{ matrix.arch }}-binaries-${{ github.sha }}
+          path: /home/runner/compiled
+          key: ${{ runner.os }}-${{ matrix.target.GOOS }}-${{ matrix.target.GOARCH }}-${{ matrix.target.type }}-ffmpeg-${{ hashFiles('**/install_ffmpeg.sh') }}
 
       - name: Set build environment
         run: |
-          echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "GOOS=${{ matrix.platform.name }}" >> $GITHUB_ENV
+          echo "GOARCH=${{ matrix.target.GOARCH }}" >> $GITHUB_ENV
+          echo "GOOS=${{ matrix.target.GOOS }}" >> $GITHUB_ENV
           echo "GO_BUILD_DIR=lp-builds/" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/github/home/compiled/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Set GPU build environment
+        if: matrix.target.type == 'gpu'
+        run: |
+          echo "CPATH=/usr/local/cuda_${{ matrix.target.GOARCH }}/include" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=/usr/local/cuda_${{ matrix.target.GOARCH }}/lib64" >> $GITHUB_ENV
+          echo "CGO_LDFLAGS=-L/usr/local/cuda_${{ matrix.target.GOARCH }}/lib64" >> $GITHUB_ENV
+          echo "RELEASE_TAG=gpu" >> $GITHUB_ENV
 
       - name: Install dependencies
         run: |
-          apt-get update \
-            && apt-get install -y software-properties-common curl apt-transport-https \
-            && apt-key adv --keyserver keyserver.ubuntu.com --recv 15CF4D18AF4F7421 \
-            && add-apt-repository "deb [arch=amd64] http://apt.llvm.org/xenial/ llvm-toolchain-xenial-12 main" \
-            && apt-get update \
-            && apt-get -y install clang-12 clang-tools-12 lld-12 build-essential pkg-config autoconf git python gcc-multilib libgcc-8-dev-arm64-cross mingw-w64-tools gcc-mingw-w64-x86-64
+          apt update \
+            && apt install -yqq software-properties-common curl apt-transport-https lsb-release \
+            && curl -fsSl https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - \
+            && add-apt-repository "deb https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-14 main" \
+            && apt update \
+            && apt -yqq install \
+              nasm clang-14 clang-tools-14 lld-14 build-essential pkg-config autoconf git python3 \
+              gcc-mingw-w64 libgcc-9-dev-arm64-cross mingw-w64-tools gcc-mingw-w64-x86-64
 
-          update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-12 30 \
-            && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-12 30 \
-            && update-alternatives --install /usr/bin/ld ld /usr/bin/lld-12 30
+          update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-14 30 \
+            && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-14 30 \
+            && update-alternatives --install /usr/bin/ld ld /usr/bin/lld-14 30
 
       - name: Install go modules
         if: steps.go.outputs.cache-hit != 'true'
@@ -106,7 +128,6 @@ jobs:
           GHA_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref }}
         run: |
           git config --global --add safe.directory '*'
-          export PKG_CONFIG_PATH=/github/home/compiled/lib/pkgconfig
           ./ci_env.sh make
 
       - name: Upload build
@@ -119,7 +140,7 @@ jobs:
         run: ./upload_build.sh
 
       - name: Upload artifacts for cutting release
-        uses: actions/upload-artifact@master
+        uses: actions/upload-artifact@v3
         with:
           name: release-artifacts
           path: releases/
@@ -128,21 +149,23 @@ jobs:
         run: curl -X POST https://holy-bread-207a.livepeer.workers.dev
 
   macos-build:
-    name: Build binaries for ${{ matrix.platform.name }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.platform.runner }}
+    name: Build binaries for ${{ matrix.target.GOOS }}-${{ matrix.target.GOARCH }}
+    runs-on: ${{ matrix.target.runner }}
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - arm64
-          - amd64
-        platform:
-          - name: darwin
+        target:
+          - GOOS: darwin
+            GOARCH: amd64
+            runner: macos-latest
+
+          - GOOS: darwin
+            GOARCH: arm64
             runner: macos-latest
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@v4.1.1
         with:
           fetch-depth: 0
           # Check https://github.com/livepeer/go-livepeer/pull/1891
@@ -151,17 +174,16 @@ jobs:
 
       - name: Set up go
         id: go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.17
-          go-version-file: go.mod
+          go-version: 1.20.4
           cache: true
           cache-dependency-path: go.sum
 
       - name: Set build environment
         run: |
-          echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "GOOS=${{ matrix.platform.name }}" >> $GITHUB_ENV
+          echo "GOARCH=${{ matrix.target.GOARCH }}" >> $GITHUB_ENV
+          echo "GOOS=${{ matrix.target.GOOS }}" >> $GITHUB_ENV
           echo "GO_BUILD_DIR=lp-builds/" >> $GITHUB_ENV
 
       - name: Cache ffmpeg
@@ -169,15 +191,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/compiled
-          key: ${{ runner.os }}-${{ matrix.platform.name }}-${{ matrix.arch }}-ffmpeg-${{ hashFiles('**/install_ffmpeg.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.platform.name }}-${{ matrix.arch }}-ffmpeg-
-
-      - name: Cache binaries
-        uses: actions/cache@v3
-        with:
-          path: ~/build
-          key: ${{ runner.os }}-${{ matrix.platform.name }}-${{ matrix.arch }}-binaries-${{ github.sha }}
+          key: ${{ runner.os }}-${{ matrix.target.GOOS }}-${{ matrix.target.GOARCH }}-ffmpeg-${{ hashFiles('**/install_ffmpeg.sh') }}
 
       - name: Install dependencies
         run: brew install coreutils pkg-config
@@ -205,7 +219,7 @@ jobs:
           regex: '^(master|main|v[0-9]+\.\d+\.\d+)$'
 
       - name: Codesign and notarize binaries
-        if: steps.match-tag.outputs.match != '' && matrix.platform.name == 'darwin'
+        if: steps.match-tag.outputs.match != '' && matrix.target.GOOS == 'darwin'
         uses: livepeer/action-gh-codesign-apple@latest
         with:
           developer-certificate-id: ${{ secrets.CI_MACOS_CERTIFICATE_ID }}
@@ -213,8 +227,8 @@ jobs:
           developer-certificate-password: ${{ secrets.CI_MACOS_CERTIFICATE_PASSWORD }}
           app-notarization-email: ${{ secrets.CI_MACOS_NOTARIZATION_USER }}
           app-notarization-password: ${{ secrets.CI_MACOS_NOTARIZATION_PASSWORD }}
+          app-notarization-team-id: ${{ secrets.CI_MACOS_NOTARIZATION_TEAM_ID }}
           binary-path: "lp-builds/"
-          app-bundle-id: "org.livepeer.livepeer"
 
       - name: Upload build
         if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
@@ -226,104 +240,7 @@ jobs:
         run: ./upload_build.sh
 
       - name: Upload artifacts for cutting release
-        uses: actions/upload-artifact@master
-        with:
-          name: release-artifacts
-          path: releases/
-
-      - name: Notify new build upload
-        run: curl -X POST https://holy-bread-207a.livepeer.workers.dev
-
-  linux-tensorflow:
-    name: Build binaries for linux using tensorflow
-    runs-on: ubuntu-latest
-    container:
-      image: ubuntu:18.04
-    steps:
-      - name: Setup ubuntu container
-        run: |
-          apt update
-          apt install -yqq build-essential make software-properties-common
-          add-apt-repository -y ppa:git-core/ppa
-          apt update && apt install -yqq git zip unzip zlib1g-dev zlib1g coreutils binutils libc++-dev libc++abi-dev libtool p7zip-full mediainfo xz-utils
-
-      - name: Check out code
-        uses: actions/checkout@v3.3.0
-        with:
-          fetch-depth: 0
-          # Check https://github.com/livepeer/go-livepeer/pull/1891
-          # for ref value discussion
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Set up go
-        id: go
-        uses: actions/setup-go@v3
-        with:
-          go-version: 1.17
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Cache ffmpeg
-        id: cache-ffmpeg
-        uses: actions/cache@v3
-        with:
-          path: /github/home/compiled
-          key: ${{ runner.os }}-ffmpeg-tf-${{ hashFiles('**/install_ffmpeg.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-ffmpeg-tf-
-
-      - name: Cache binaries
-        uses: actions/cache@v3
-        with:
-          path: ~/build
-          key: ${{ runner.os }}-binaries-tf-${{ github.sha }}
-
-      - name: Install dependencies
-        run: |
-          apt-get update \
-            && apt-get install -y software-properties-common curl apt-transport-https \
-            && apt-key adv --keyserver keyserver.ubuntu.com --recv 15CF4D18AF4F7421 \
-            && add-apt-repository "deb [arch=amd64] http://apt.llvm.org/xenial/ llvm-toolchain-xenial-8 main" \
-            && apt-get update \
-            && apt-get -y install clang-8 clang-tools-8 build-essential pkg-config autoconf gnutls-dev git python
-
-          update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-8 30 \
-            && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-8 30
-
-          LIBTENSORFLOW_VERSION=2.3.4 \
-            && curl -LO https://storage.googleapis.com/tensorflow/libtensorflow/libtensorflow-gpu-linux-x86_64-${LIBTENSORFLOW_VERSION}.tar.gz \
-            && tar -C /usr/local -xzf libtensorflow-gpu-linux-x86_64-${LIBTENSORFLOW_VERSION}.tar.gz \
-            && ldconfig
-
-      - name: Install go modules
-        # if: steps.go.outputs.cache-hit != 'true'
-        run: go mod download
-
-      - name: Install ffmpeg
-        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-        run: ./install_ffmpeg.sh
-
-      - name: Build binaries
-        env:
-          GHA_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref }}
-        run: |
-          git config --global --add safe.directory '*'
-          export PKG_CONFIG_PATH=/github/home/compiled/lib/pkgconfig
-          ./ci_env.sh make cgo_cflags="-lz" all
-          rm -rf ~/build && mkdir ~/build && mv livepeer* ~/build/
-
-      - name: Upload build
-        run: cp ~/build/* . && ./upload_build.sh
-        env:
-          GHA_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref }}
-          GCLOUD_KEY: ${{ secrets.GCLOUD_KEY }}
-          GCLOUD_SECRET: ${{ secrets.GCLOUD_SECRET }}
-          DISCORD_URL: ${{ secrets.DISCORD_URL }}
-          RELEASE_TAG: "tensorflow"
-
-      - name: Upload artifacts for cutting release
-        uses: actions/upload-artifact@master
+        uses: actions/upload-artifact@v3
         with:
           name: release-artifacts
           path: releases/
@@ -340,7 +257,6 @@ jobs:
     needs:
       - macos-build
       - linux-build
-      - linux-tensorflow
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v3
@@ -366,7 +282,7 @@ jobs:
 
       - name: Authenticate to Google Cloud
         id: auth
-        uses: google-github-actions/auth@v1
+        uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.CI_GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.CI_GOOGLE_SERVICE_ACCOUNT }}

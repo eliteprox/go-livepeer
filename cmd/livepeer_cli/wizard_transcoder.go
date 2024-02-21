@@ -307,12 +307,12 @@ func (w *wizard) setMaxFaceValue() {
 }
 
 func (w *wizard) setPriceForBroadcaster() {
-	fmt.Println("Enter the ETH address of the broadcaster")
+	fmt.Println("Enter the ETH address of the broadcaster (default=default)")
 	ethaddr := w.readStringAndValidate(func(in string) (string, error) {
 		if "" == in {
-			return "", fmt.Errorf("no broadcaster eth address input")
+			in = "default"
 		}
-		if in[0:2] != "0x" || len(in) != 42 {
+		if in != "default" && (in[0:2] != "0x" || len(in) != 42) {
 			return "", fmt.Errorf("broadcaster eth address input not in correct format")
 		}
 
@@ -337,4 +337,28 @@ func (w *wizard) setPriceForBroadcaster() {
 		return
 	}
 
+}
+
+func (w *wizard) setMaxSessions() {
+	fmt.Println("Enter the maximum # of sessions")
+	maxSessions := w.readStringAndValidate(func(in string) (string, error) {
+		intVal, err := strconv.Atoi(in)
+		if "" == in || (in != "auto" && intVal <= 0 && err != nil) {
+			return "", fmt.Errorf("Max Sessions must be 'auto' or greater than zero")
+		}
+
+		return in, nil
+	})
+
+	data := url.Values{
+		"maxSessions": {fmt.Sprintf("%v", maxSessions)},
+	}
+	result, ok := httpPostWithParams(fmt.Sprintf("http://%v:%v/setMaxSessions", w.host, w.httpPort), data)
+	if ok {
+		fmt.Printf(result)
+		return
+	} else {
+		fmt.Printf("Error setting max sessions: %v", result)
+		return
+	}
 }

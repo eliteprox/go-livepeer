@@ -56,7 +56,8 @@ func StubBroadcastSession(transcoder string) *BroadcastSession {
 				PricePerUnit:  1,
 				PixelsPerUnit: 1,
 			},
-			AuthToken: stubAuthToken,
+			AuthToken:    stubAuthToken,
+			TicketParams: &net.TicketParams{Recipient: pm.RandAddress().Bytes()},
 		},
 		OrchestratorScore: common.Score_Trusted,
 		lock:              &sync.RWMutex{},
@@ -453,31 +454,32 @@ func TestSelectSession_MultipleInFlight2(t *testing.T) {
 }
 
 func TestSelectSession_NoSegsInFlight(t *testing.T) {
-	assert := assert.New(t)
+	assert := require.New(t)
+	ctx := context.Background()
 
 	sess := &BroadcastSession{}
 	sessList := []*BroadcastSession{sess}
 
 	// Session has segs in flight
 	sess.SegsInFlight = []SegFlightMetadata{
-		{startTime: time.Now().Add(time.Duration(-1) * time.Second), segDur: 1 * time.Second},
+		{startTime: time.Now().Add(time.Duration(-2) * time.Second), segDur: 1 * time.Second},
 	}
-	s := selectSession(sessList, nil, 1)
+	s := selectSession(ctx, sessList, nil, 1)
 	assert.Nil(s)
 
 	// Session has no segs in flight, latency score = 0
 	sess.SegsInFlight = nil
-	s = selectSession(sessList, nil, 1)
+	s = selectSession(ctx, sessList, nil, 1)
 	assert.Nil(s)
 
 	// Session has no segs in flight, latency score > SELECTOR_LATENCY_SCORE_THRESHOLD
 	sess.LatencyScore = SELECTOR_LATENCY_SCORE_THRESHOLD + 0.001
-	s = selectSession(sessList, nil, 1)
+	s = selectSession(ctx, sessList, nil, 1)
 	assert.Nil(s)
 
 	// Session has no segs in flight, latency score > 0 and < SELECTOR_LATENCY_SCORE_THRESHOLD
 	sess.LatencyScore = SELECTOR_LATENCY_SCORE_THRESHOLD - 0.001
-	s = selectSession(sessList, nil, 1)
+	s = selectSession(ctx, sessList, nil, 1)
 	assert.Equal(sess, s)
 }
 
@@ -739,7 +741,7 @@ func TestTranscodeSegment_CompleteSession(t *testing.T) {
 	// Create stub server
 	ts, mux := stubTLSServer()
 	defer ts.Close()
-	transcodeDelay := 100 * time.Millisecond
+	transcodeDelay := 1500 * time.Millisecond
 	mux.HandleFunc("/segment", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(transcodeDelay)
 		w.WriteHeader(http.StatusOK)
@@ -842,7 +844,8 @@ func TestProcessSegment_MaxAttempts(t *testing.T) {
 	transcodeCalls = 0
 	_, err = processSegment(context.Background(), cxn, seg, nil)
 	assert.NotNil(err)
-	assert.Equal("Hit max transcode attempts: UnknownResponse", err.Error())
+	assert.True(errors.Is(err, maxTranscodeAttempts))
+	assert.Equal("hit max transcode attempts: UnknownResponse", err.Error())
 	assert.Equal(1, transcodeCalls, "Segment submission calls did not match")
 	assert.Len(bsm.trustedPool.sessMap, 1)
 
@@ -931,7 +934,7 @@ func TestProcessSegment_MetadataQueueTranscodeEvent(t *testing.T) {
 	}
 	cxn := &rtmpConnection{
 		mid:     "dummy1",
-		params:  &core.StreamParameters{ManifestID: "dummy1", ExternalStreamID: "ext_dummy"},
+		params:  &core.StreamParameters{ManifestID: "dummy1", ExternalStreamID: "ext_dummy", Profiles: BroadcastJobVideoProfiles},
 		profile: &ffmpeg.VideoProfile{Name: "unused"},
 		pl:      &stubPlaylistManager{os: &stubOSSession{}},
 	}
@@ -1738,7 +1741,7 @@ func genBcastSess(ctx context.Context, t *testing.T, url string, os drivers.OSSe
 		Broadcaster:       stubBroadcaster2(),
 		Params:            &core.StreamParameters{ManifestID: mid, Profiles: []ffmpeg.VideoProfile{ffmpeg.P144p30fps16x9}, OS: os},
 		BroadcasterOS:     os,
-		OrchestratorInfo:  &net.OrchestratorInfo{Transcoder: transcoderURL, AuthToken: stubAuthToken},
+		OrchestratorInfo:  &net.OrchestratorInfo{Transcoder: transcoderURL, AuthToken: stubAuthToken, TicketParams: &net.TicketParams{Recipient: pm.RandAddress().Bytes()}},
 		OrchestratorScore: common.Score_Trusted,
 		lock:              &sync.RWMutex{},
 	}

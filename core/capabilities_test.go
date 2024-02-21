@@ -92,22 +92,22 @@ func TestCapability_CompatibleBitstring(t *testing.T) {
 		assert := assert.New(t) // in order to pick up the rapid rng
 
 		// generate initial list of caps
-		nbCaps := rapid.IntRange(0, 512).Draw(t, "nbCaps").(int)
+		nbCaps := rapid.IntRange(0, 512).Draw(t, "nbCaps")
 		isSet := rapid.IntRange(0, 1)
 		caps := []Capability{}
 		for i := 0; i < nbCaps; i++ {
-			if 1 == isSet.Draw(t, "isSet").(int) {
+			if 1 == isSet.Draw(t, "isSet") {
 				caps = append(caps, Capability(i))
 			}
 		}
 
 		// generate a subset of caps
-		reductionSz := rapid.IntRange(0, len(caps)).Draw(t, "reductionSz").(int)
+		reductionSz := rapid.IntRange(0, len(caps)).Draw(t, "reductionSz")
 		subsetCaps := make([]Capability, len(caps))
 		copy(subsetCaps, caps)
 		for i := 0; i < reductionSz; i++ {
 			// select an index k, and remove it
-			k := rapid.IntRange(0, len(subsetCaps)-1).Draw(t, "k").(int)
+			k := rapid.IntRange(0, len(subsetCaps)-1).Draw(t, "k")
 			subsetCaps[k] = subsetCaps[len(subsetCaps)-1]
 			subsetCaps = subsetCaps[:len(subsetCaps)-1]
 		}
@@ -228,14 +228,10 @@ func TestCapability_JobCapabilities(t *testing.T) {
 		{Profile: ffmpeg.ProfileH264High},
 		{GOP: 1},
 	}
-	detector := DetectionConfig{
-		Freq:     1,
-		Profiles: []ffmpeg.DetectorProfile{&ffmpeg.SceneClassificationProfile{}},
-	}
 	storageURI := "s3+http://K:P@localhost:9000/bucket"
 	os, err := drivers.ParseOSURL(storageURI, false)
 	assert.Nil(err)
-	params := &StreamParameters{Profiles: profs, OS: os.NewSession(""), Detection: detector}
+	params := &StreamParameters{Profiles: profs, OS: os.NewSession("")}
 	assert.True(checkSuccess(params, []Capability{
 		Capability_H264,
 		Capability_MP4,
@@ -246,13 +242,11 @@ func TestCapability_JobCapabilities(t *testing.T) {
 		Capability_ProfileH264High,
 		Capability_GOP,
 		Capability_AuthToken,
-		Capability_SceneClassification,
 	}), "failed with everything enabled")
 
 	// check fractional framerates
 	params.Profiles = []ffmpeg.VideoProfile{{FramerateDen: 1}}
 	params.OS = nil
-	params.Detection = DetectionConfig{}
 	assert.True(checkSuccess(params, []Capability{
 		Capability_H264,
 		Capability_MPEGTS,
@@ -349,11 +343,11 @@ func TestCapability_RoundTrip_Net(t *testing.T) {
 		assert := assert.New(t) // in order to pick up the rapid rng
 
 		makeCapList := func() []Capability {
-			randCapsLen := rapid.IntRange(0, 256).Draw(t, "capLen").(int)
+			randCapsLen := rapid.IntRange(0, 256).Draw(t, "capLen")
 			randCaps := rapid.IntRange(0, 512)
 			capList := []Capability{}
 			for i := 0; i < randCapsLen; i++ {
-				capList = append(capList, Capability(randCaps.Draw(t, "cap").(int)))
+				capList = append(capList, Capability(randCaps.Draw(t, "cap")))
 			}
 			return capList
 		}
