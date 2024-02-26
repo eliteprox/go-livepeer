@@ -879,13 +879,17 @@ func processSegment(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSeg
 			ctx, cancel := clog.WithTimeout(context.Background(), ctx, recordSegmentsMaxTimeout)
 			defer cancel()
 			now := time.Now()
-			uri, err := drivers.SaveRetried(ctx, ros, name, seg.Data, map[string]string{"duration": segDurMs}, 3)
+			fileProperties := drivers.FileProperties{
+				Metadata: map[string]string{"duration": segDurMs},
+			}
+
+			uri, err := drivers.SaveRetried(ctx, ros, name, seg.Data, &fileProperties, 3)
 			took := time.Since(now)
 			if err != nil {
 				clog.Errorf(ctx, "Error saving name=%s bytes=%d to record store err=%q",
 					name, len(seg.Data), err)
 			} else {
-				cpl.InsertHLSSegmentJSON(vProfile, seg.SeqNo, uri, seg.Duration)
+				cpl.InsertHLSSegmentJSON(vProfile, seg.SeqNo, uri.URL, seg.Duration)
 				clog.Infof(ctx, "Successfully saved name=%s bytes=%d to record store took=%s",
 					name, len(seg.Data), took)
 				cpl.FlushRecord()
@@ -904,9 +908,9 @@ func processSegment(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSeg
 		return nil, err
 	}
 	if cpl.GetOSSession().IsExternal() {
-		seg.Name = uri // hijack seg.Name to convey the uploaded URI
+		seg.Name = uri.URL // hijack seg.Name to convey the uploaded URI
 	}
-	err = cpl.InsertHLSSegment(vProfile, seg.SeqNo, uri, seg.Duration)
+	err = cpl.InsertHLSSegment(vProfile, seg.SeqNo, uri.URL, seg.Duration)
 	if monitor.Enabled {
 		monitor.SourceSegmentAppeared(ctx, nonce, seg.SeqNo, string(mid), vProfile.Name, ros != nil)
 	}
@@ -935,8 +939,8 @@ func processSegment(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSeg
 				}
 				return nil, err
 			}
-			urls = append(urls, uri)
-			err = cpl.InsertHLSSegment(&profile, seg.SeqNo, uri, seg.Duration)
+			urls = append(urls, uri.URL)
+			err = cpl.InsertHLSSegment(&profile, seg.SeqNo, uri.URL, seg.Duration)
 			if err != nil {
 				clog.Errorf(ctx, "Error inserting segment err=%q", err)
 				if monitor.Enabled {
@@ -1165,7 +1169,7 @@ func prepareForTranscoding(ctx context.Context, cxn *rtmpConnection, sess *Broad
 		}
 		segCopy := *seg
 		res = &segCopy
-		res.Name = uri // hijack seg.Name to convey the uploaded URI
+		res.Name = uri.URL // hijack seg.Name to convey the uploaded URI
 	}
 
 	refresh, err := shouldRefreshSession(ctx, sess)
@@ -1252,12 +1256,15 @@ func downloadResults(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSe
 				name := fmt.Sprintf("%s/%d%s", profile.Name, seg.SeqNo, ext)
 				segDurMs := getSegDurMsString(seg)
 				now := time.Now()
-				uri, err := drivers.SaveRetried(ctx, bros, name, data, map[string]string{"duration": segDurMs}, 3)
+				fileProperties := drivers.FileProperties{
+					Metadata: map[string]string{"duration": segDurMs},
+				}
+				uri, err := drivers.SaveRetried(ctx, bros, name, data, &fileProperties, 3)
 				took := time.Since(now)
 				if err != nil {
 					clog.Errorf(ctx, "Error saving nonce=%d manifestID=%s name=%s to record store err=%q", nonce, cxn.mid, name, err)
 				} else {
-					cpl.InsertHLSSegmentJSON(&profile, seg.SeqNo, uri, seg.Duration)
+					cpl.InsertHLSSegmentJSON(&profile, seg.SeqNo, uri.URL, seg.Duration)
 					clog.Infof(ctx, "Successfully saved nonce=%d manifestID=%s name=%s size=%d bytes to record store took=%s",
 						nonce, cxn.mid, name, len(data), took)
 				}
@@ -1285,7 +1292,7 @@ func downloadResults(ctx context.Context, cxn *rtmpConnection, seg *stream.HLSSe
 				}
 				return
 			}
-			url = newURL
+			url = newURL.URL
 		}
 
 		// Store URLs for the verifier. Be aware that the segment is

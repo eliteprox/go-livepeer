@@ -353,20 +353,20 @@ func TestVerifyPixels(t *testing.T) {
 
 	// Test error for relative URI and no memory storage if the file does not exist on disk
 	// Will try to use the relative URI to read the file from disk and fail
-	err = verifyPixels(fname, nil, 50)
+	err = verifyPixels(fname.URL, nil, 50)
 	// Early codec check didn't find video in missing input file so we get `TranscoderInvalidVideo`
 	//  instead of `Invalid data found when processing input`
 	assert.EqualError(err, "TranscoderInvalidVideo")
 
 	// Test writing temp file for relative URI and local memory storage with incorrect pixels
-	err = verifyPixels(fname, memOS.GetData(fname), 50)
+	err = verifyPixels(fname.URL, memOS.GetData(fname.URL), 50)
 	assert.Equal(ErrPixelMismatch, err)
 
 	// Test writing temp file for relative URI and local memory storage with correct pixels
 	// Make sure that verifyPixels() checks against the output of pixels()
 	p, err := pixels("../server/test.flv")
 	require.Nil(err)
-	err = verifyPixels(fname, memOS.GetData(fname), p)
+	err = verifyPixels(fname.URL, memOS.GetData(fname.URL), p)
 	assert.Nil(err)
 
 	// Test nil data

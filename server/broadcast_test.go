@@ -182,9 +182,11 @@ type stubOSSession struct {
 	err      error
 }
 
-func (s *stubOSSession) SaveData(ctx context.Context, name string, data io.Reader, meta map[string]string, timeout time.Duration) (string, error) {
+func (s *stubOSSession) SaveData(ctx context.Context, name string, data io.Reader, fields *drivers.FileProperties, timeout time.Duration) (*drivers.SaveDataOutput, error) {
 	s.saved = append(s.saved, name)
-	return "saved_" + name, s.err
+	return &drivers.SaveDataOutput{
+		URL: "saved_" + name,
+	}, s.err
 }
 func (s *stubOSSession) EndSession() {
 }
@@ -197,11 +199,19 @@ func (s *stubOSSession) IsExternal() bool {
 func (s *stubOSSession) IsOwn(url string) bool {
 	return strings.HasPrefix(url, s.host)
 }
+func (os *stubOSSession) DeleteFile(ctx context.Context, name string) error {
+	return nil
+}
 func (s *stubOSSession) ListFiles(ctx context.Context, prefix, delim string) (drivers.PageInfo, error) {
 	return nil, nil
 }
 func (s *stubOSSession) ReadData(ctx context.Context, name string) (*drivers.FileInfoReader, error) {
 	return nil, nil
+}
+func (os *stubOSSession) ReadDataRange(ctx context.Context, name, byteRange string) (*drivers.FileInfoReader, error)
+
+func (os *stubOSSession) Presign(name string, expire time.Duration) (string, error) {
+	return "", drivers.ErrNotSupported
 }
 func (s *stubOSSession) OS() drivers.OSDriver {
 	return nil
@@ -1364,10 +1374,10 @@ func TestVerifier_Verify(t *testing.T) {
 	assert.True(ok)
 	name, err := mem.SaveData(context.TODO(), "/rendition/seg/1", strings.NewReader("attempt1"), nil, 0)
 	assert.Nil(err)
-	assert.Equal([]byte("attempt1"), mem.GetData(name))
+	assert.Equal([]byte("attempt1"), mem.GetData(name.URL))
 	sess.BroadcasterOS = mem
 	verifier = newStubSegmentVerifier(sv)
-	URIs[0] = name
+	URIs[0] = name.URL
 	renditionData = [][]byte{[]byte("attempt1")}
 	err = verify(verifier, cxn, sess, source, res, URIs, renditionData)
 	assert.Equal(sv.err, err)
@@ -1376,11 +1386,11 @@ func TestVerifier_Verify(t *testing.T) {
 	// and ensure 1st attempt is what remains after verification
 	_, err = mem.SaveData(context.TODO(), "/rendition/seg/1", strings.NewReader("attempt2"), nil, 0)
 	assert.Nil(err)
-	assert.Equal([]byte("attempt2"), mem.GetData(name))
+	assert.Equal([]byte("attempt2"), mem.GetData(name.URL))
 	renditionData = [][]byte{[]byte("attempt2")}
 	err = verify(verifier, cxn, sess, source, res, URIs, renditionData)
 	assert.Nil(err)
-	assert.Equal([]byte("attempt1"), mem.GetData(name))
+	assert.Equal([]byte("attempt1"), mem.GetData(name.URL))
 	c.Cleanup()
 }
 

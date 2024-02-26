@@ -293,7 +293,7 @@ func TestCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectedURI := "test://some.host/stream/testPath/testName"
-	if uri != expectedURI {
+	if uri.URL != expectedURI {
 		t.Fatalf("Expected %s, got %s", expectedURI, uri)
 	}
 	data := memoryOS.GetData("testPath/testName")

@@ -572,13 +572,16 @@ func (n *LivepeerNode) transcodeSeg(ctx context.Context, config transcodeConfig,
 		url = seg.Name
 	} else {
 		// Need to store segment in our local OS
-		var err error
+		//var err error
+		fields := &drivers.FileProperties{}
 		name := fmt.Sprintf("%d.tempfile", seg.SeqNo)
-		url, err = config.LocalOS.SaveData(ctx, name, bytes.NewReader(seg.Data), nil, 0)
+
+		var out *drivers.SaveDataOutput
+		out, err := config.LocalOS.SaveData(ctx, name, bytes.NewReader(seg.Data), fields, 0)
 		if err != nil {
 			return terr(err)
 		}
-		seg.Name = url
+		seg.Name = out.URL
 	}
 	md.Fname = url
 

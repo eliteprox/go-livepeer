@@ -194,14 +194,14 @@ func (h *lphttp) ServeSegment(w http.ResponseWriter, r *http.Request) {
 		name := fmt.Sprintf("%s/%d%s", segData.Profiles[i].Name, segData.Seq, ext)
 		// The use of := here is probably a bug?!?
 		segData := bytes.NewReader(res.TranscodeData.Segments[i].Data)
-		uri, err := res.OS.SaveData(ctx, name, segData, nil, 0)
+		resp, err := res.OS.SaveData(ctx, name, segData, nil, 0)
 		if err != nil {
 			clog.Errorf(ctx, "Could not upload segment err=%q", err)
 			break
 		}
 		pixels += res.TranscodeData.Segments[i].Pixels
 		d := &net.TranscodedSegmentData{
-			Url:    uri,
+			Url:    resp.URL,
 			Pixels: res.TranscodeData.Segments[i].Pixels,
 		}
 		// Save perceptual hash if generated
@@ -213,7 +213,7 @@ func (h *lphttp) ServeSegment(w http.ResponseWriter, r *http.Request) {
 				clog.Errorf(ctx, "Could not upload segment perceptual hash err=%q", err)
 				break
 			}
-			d.PerceptualHashUrl = pHashUri
+			d.PerceptualHashUrl = pHashUri.URL
 		}
 		segments = append(segments, d)
 	}
