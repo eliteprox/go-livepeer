@@ -208,7 +208,9 @@ func (s *stubOSSession) ListFiles(ctx context.Context, prefix, delim string) (dr
 func (s *stubOSSession) ReadData(ctx context.Context, name string) (*drivers.FileInfoReader, error) {
 	return nil, nil
 }
-func (os *stubOSSession) ReadDataRange(ctx context.Context, name, byteRange string) (*drivers.FileInfoReader, error)
+func (os *stubOSSession) ReadDataRange(ctx context.Context, name, byteRange string) (*drivers.FileInfoReader, error) {
+	return nil, nil
+}
 
 func (os *stubOSSession) Presign(name string, expire time.Duration) (string, error) {
 	return "", drivers.ErrNotSupported
