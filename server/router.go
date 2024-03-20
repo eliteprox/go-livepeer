@@ -361,14 +361,7 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 	glog.Infof("started router server at %v", uri)
 
 	glog.Infof("loading routing")
-	success := r.LoadRouting()
-	if success == false {
-		//Create a blank file
-		glog.Infof("creating routing file")
-		file, _ := json.MarshalIndent(r.closestOrchestratorToB, "", " ")
-		r.SaveRoutingJson(file)
-		glog.Infof("creating routing file")
-	}
+	r.LoadRouting()
 
 	glog.Infof("starting router clients")
 	r.CreateClients()
@@ -432,16 +425,16 @@ func (r *LatencyRouter) SaveRouting() {
 func (r *LatencyRouter) SaveRoutingJson(json_data []byte) {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
-	err := os.WriteFile(filepath.Join(r.workDir, "routing.json"), json_data, 0644)
+	err := os.WriteFile(filepath.Join(r.workDir, "/routing.json"), json_data, 0644)
 	if err != nil {
 		glog.Errorf("error saving routing: %v", err.Error())
 	}
 }
 
-func (r *LatencyRouter) LoadRouting() bool {
+func (r *LatencyRouter) LoadRouting() {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
-	routing_file := filepath.Join(r.workDir, "routing.json")
+	routing_file := filepath.Join(r.workDir, "/routing.json")
 	if _, err := os.Stat(routing_file); err == nil {
 		json_file, err := ioutil.ReadFile(routing_file)
 		if err != nil {
@@ -454,6 +447,9 @@ func (r *LatencyRouter) LoadRouting() bool {
 		}
 	} else {
 		glog.Errorf("no routing file exists")
+		file := []byte("{}")
+		r.SaveRoutingJson(file)
+		glog.Infof("created routing file")
 	}
 }
 
@@ -1064,7 +1060,7 @@ func (r *LatencyRouter) handleGetRoutingData(w http.ResponseWriter, req *http.Re
 	w.Header().Set("Content-Type", "application/json")
 
 	glog.Info("received routing data request")
-	if reader, err := os.Open(filepath.Join(r.workDir, "routing.json")); err == nil {
+	if reader, err := os.Open(filepath.Join(r.workDir, "/routing.json")); err == nil {
 		defer reader.Close()
 		io.Copy(w, reader)
 	} else {
