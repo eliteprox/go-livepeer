@@ -361,7 +361,14 @@ func (r *LatencyRouter) Start(uri *url.URL, serviceURI *url.URL, dataPort string
 	glog.Infof("started router server at %v", uri)
 
 	glog.Infof("loading routing")
-	r.LoadRouting()
+	success := r.LoadRouting()
+	if success == false {
+		//Create a blank file
+		glog.Infof("creating routing file")
+		file, _ := json.MarshalIndent(r.closestOrchestratorToB, "", " ")
+		r.SaveRoutingJson(file)
+		glog.Infof("creating routing file")
+	}
 
 	glog.Infof("starting router clients")
 	r.CreateClients()
@@ -425,13 +432,13 @@ func (r *LatencyRouter) SaveRouting() {
 func (r *LatencyRouter) SaveRoutingJson(json_data []byte) {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
-	err := ioutil.WriteFile(filepath.Join(r.workDir, "routing.json"), json_data, 0644)
+	err := os.WriteFile(filepath.Join(r.workDir, "routing.json"), json_data, 0644)
 	if err != nil {
 		glog.Errorf("error saving routing: %v", err.Error())
 	}
 }
 
-func (r *LatencyRouter) LoadRouting() {
+func (r *LatencyRouter) LoadRouting() bool {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
 	routing_file := filepath.Join(r.workDir, "routing.json")
@@ -518,7 +525,7 @@ func (r *LatencyRouter) getOrchestratorInfoClosestToB(ctx context.Context, req *
 				cached_info, err = r.GetOrchestratorInfo(ctx, client_info, req, cachedOrchResp.OrchUri)
 			}
 			if err == nil {
-				expires_in := (cached_info.AuthToken.Expiration - time.Now().Unix()) / 60 
+				expires_in := (cached_info.AuthToken.Expiration - time.Now().Unix()) / 60
 				glog.Infof("%v  returning orchestrator cached %s ago  orch addr: %v priceperunit: %v ticket_params_expiration: %v minutes", client_addr, time_since_cached.Round(time.Second), cached_info.GetTranscoder(), cached_info.PriceInfo.GetPricePerUnit(), expires_in)
 				return cached_info, nil
 			}
