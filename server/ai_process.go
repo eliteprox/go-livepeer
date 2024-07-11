@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"io/ioutil"
 	"math/big"
 	"net/http"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
 	"github.com/livepeer/go-tools/drivers"
+	"github.com/livepeer/lpms/ffmpeg"
 	"github.com/livepeer/lpms/stream"
 )
 
@@ -408,21 +410,43 @@ func submitUpscale(ctx context.Context, params aiRequestParams, sess *AISession,
 }
 
 func submitAudioToText(ctx context.Context, params aiRequestParams, sess *AISession, req worker.AudioToTextMultipartRequestBody) (*worker.TextResponse, error) {
-	var buf bytes.Buffer
-	mw, err := worker.NewAudioToTextMultipartWriter(&buf, req)
+
+	tempDir, err := ioutil.TempDir("", "audio")
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := worker.NewClientWithResponses(sess.Transcoder(), worker.WithHTTPClient(httpClient))
+	fname := req.Audio.Filename()
+	tempFilePath := filepath.Join(tempDir, fname)
+	fbytes, err := req.Audio.Bytes()
+	err = ioutil.WriteFile(tempFilePath, fbytes, 0644)
 	if err != nil {
 		return nil, err
 	}
+
+	in := &ffmpeg.TranscodeOptionsIn{Fname: tempFilePath}
+	out := []ffmpeg.TranscodeOptions{{
+		Oname:        req.Audio.Filename(),
+		VideoEncoder: ffmpeg.ComponentOptions{Name: "drop"},
+		AudioEncoder: ffmpeg.ComponentOptions{Name: "copy"},
+	}}
+
+	_, err = ffmpeg.Transcode3(in, out)
+	if err != nil {
+		return nil, err
+	}
+
+	//TODO convert the result of the transcode to oapi-codegen/runtime/types.File
 
 	outPixels, err := common.CalculateAudioDuration(req.Audio)
 	if err != nil {
 		return nil, err
 	}
+
+	var buf bytes.Buffer
+	mw, err := worker.NewAudioToTextMultipartWriter(&buf, req)
+	client, err := worker.NewClientWithResponses(sess.Transcoder(), worker.WithHTTPClient(httpClient))
+
 	glog.Infof("Submitting audio-to-text media with duration: %d seconds", outPixels)
 	outPixels *= 1000 // Convert to milliseconds
 	setHeaders, balUpdate, err := prepareAIPayment(ctx, sess, outPixels)
