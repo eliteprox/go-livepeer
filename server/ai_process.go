@@ -136,11 +136,12 @@ func submitTextToImage(ctx context.Context, params aiRequestParams, sess *AISess
 	sess.LatencyScore = took.Seconds() / float64(outPixels) / (numImages * numInferenceSteps)
 
 	if monitor.Enabled {
-		pricePerUnit := 0.0
-		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil {
-			pricePerUnit = float64(priceInfo.PricePerUnit)
+		var pricePerAIUnit float64
+		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
+			pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
 		}
-		monitor.AiJobProcessed(ctx, "text-to-image", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerUnit}, sess.OrchestratorInfo)
+
+		monitor.AIRequestFinished(ctx, "text-to-image", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 	}
 
 	return resp.JSON200, nil
@@ -248,11 +249,12 @@ func submitImageToImage(ctx context.Context, params aiRequestParams, sess *AISes
 	sess.LatencyScore = took.Seconds() / float64(outPixels) / numImages
 
 	if monitor.Enabled {
-		pricePerUnit := 0.0
-		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil {
-			pricePerUnit = float64(priceInfo.PricePerUnit)
+		var pricePerAIUnit float64
+		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
+			pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
 		}
-		monitor.AiJobProcessed(ctx, "image-to-image", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerUnit}, sess.OrchestratorInfo)
+
+		monitor.AIRequestFinished(ctx, "image-to-image", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 	}
 
 	return resp.JSON200, nil
@@ -369,11 +371,12 @@ func submitImageToVideo(ctx context.Context, params aiRequestParams, sess *AISes
 	sess.LatencyScore = took.Seconds() / float64(outPixels)
 
 	if monitor.Enabled {
-		pricePerUnit := 0.0
-		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil {
-			pricePerUnit = float64(priceInfo.PricePerUnit)
+		var pricePerAIUnit float64
+		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
+			pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
 		}
-		monitor.AiJobProcessed(ctx, "image-to-video", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerUnit}, sess.OrchestratorInfo)
+
+		monitor.AIRequestFinished(ctx, "image-to-video", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 	}
 
 	return &res, nil
@@ -472,11 +475,12 @@ func submitUpscale(ctx context.Context, params aiRequestParams, sess *AISession,
 	sess.LatencyScore = took.Seconds() / float64(outPixels)
 
 	if monitor.Enabled {
-		pricePerUnit := 0.0
-		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil {
-			pricePerUnit = float64(priceInfo.PricePerUnit)
+		var pricePerAIUnit float64
+		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
+			pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
 		}
-		monitor.AiJobProcessed(ctx, "upscale", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerUnit}, sess.OrchestratorInfo)
+
+		monitor.AIRequestFinished(ctx, "upscale", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 	}
 
 	return resp.JSON200, nil
