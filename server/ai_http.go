@@ -81,6 +81,7 @@ func startAIServer(lp *lphttp) error {
 func aiHttpHandle[I any](h *lphttp, decoderFunc func(*I, *http.Request) error) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		orch := h.orchestrator
+		token := getBearerToken(r)
 		remoteAddr := getRemoteAddr(r)
 		ctx := clog.AddVal(r.Context(), clog.ClientIP, remoteAddr)
 
@@ -90,7 +91,7 @@ func aiHttpHandle[I any](h *lphttp, decoderFunc func(*I, *http.Request) error) h
 			return
 		}
 
-		handleAIRequest(ctx, w, r, orch, req)
+		handleAIRequest(ctx, w, r, token, orch, req)
 	})
 }
 
@@ -301,7 +302,7 @@ func overwriteHost(hostOverwrite, url string) string {
 	return u.String()
 }
 
-func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, orch Orchestrator, req interface{}) {
+func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, token string, orch Orchestrator, req interface{}) {
 	payment, err := getPayment(r.Header.Get(paymentHeader))
 	if err != nil {
 		respondWithError(w, err.Error(), http.StatusPaymentRequired)
@@ -614,7 +615,7 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 			pricePerAIUnit = float64(priceInfo.GetPricePerUnit()) / float64(priceInfo.GetPixelsPerUnit())
 		}
 
-		monitor.AIJobProcessed(ctx, pipeline, modelID, monitor.AIJobInfo{LatencyScore: latencyScore, PricePerUnit: pricePerAIUnit})
+		monitor.AIJobProcessed(ctx, pipeline, modelID, token, monitor.AIJobInfo{LatencyScore: latencyScore, PricePerUnit: pricePerAIUnit})
 	}
 
 	// Check if the response is a streaming response

@@ -120,7 +120,7 @@ livepeer_router:
 	GO111MODULE=on CGO_ENABLED=1 CC="$(cc)" CGO_CFLAGS="$(cgo_cflags)" CGO_LDFLAGS="$(cgo_ldflags) ${CGO_LDFLAGS}" go build -o $(GO_BUILD_DIR) -ldflags="$(ldflags)" cmd/livepeer_router/*.go
 
 docker:
-	docker buildx build --build-arg='BUILD_TAGS=mainnet,experimental' -f docker/Dockerfile .
+	docker buildx build --build-arg='BUILD_TAGS=mainnet,experimental' -t tztcloud/go-livepeer:latest -f docker/Dockerfile .
 
 docker_mtx:
 	docker buildx build -f docker/Dockerfile.mediamtx docker/

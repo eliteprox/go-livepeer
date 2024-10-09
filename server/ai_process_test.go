@@ -291,7 +291,7 @@ func TestHandleNonStreamingResponse_SuccessFields(t *testing.T) {
 	sess := makeTestSession("http://orch:8935")
 
 	res, err := handleNonStreamingResponse(
-		context.Background(),
+		context.Background(), "tok-test",
 		io.NopCloser(strings.NewReader(body)),
 		sess, req, time.Now(),
 	)
@@ -315,7 +315,7 @@ func TestHandleNonStreamingResponse_InvalidJSON(t *testing.T) {
 	sess := makeTestSession("http://orch:8935")
 
 	res, err := handleNonStreamingResponse(
-		context.Background(),
+		context.Background(), "tok-test",
 		io.NopCloser(strings.NewReader("{not valid json")),
 		sess, req, time.Now(),
 	)
@@ -345,7 +345,7 @@ func TestHandleSSEStream_DeliversChunks(t *testing.T) {
 	}
 	sess := makeTestSession("http://orch:8935")
 
-	ch, err := handleSSEStream(context.Background(), r, sess, req, time.Now())
+	ch, err := handleSSEStream(context.Background(), "tok-test", r, sess, req, time.Now())
 	require.NoError(t, err)
 	require.NotNil(t, ch)
 
@@ -367,7 +367,7 @@ func TestHandleSSEStream_EmptyBody(t *testing.T) {
 	req := worker.GenLLMJSONRequestBody{Model: &modelID, MaxTokens: &maxTokens}
 	sess := makeTestSession("http://orch:8935")
 
-	ch, err := handleSSEStream(context.Background(), io.NopCloser(strings.NewReader("")), sess, req, time.Now())
+	ch, err := handleSSEStream(context.Background(), "tok-test", io.NopCloser(strings.NewReader("")), sess, req, time.Now())
 	require.NoError(t, err)
 
 	var chunks []*worker.LLMResponse
@@ -391,7 +391,7 @@ func TestHandleSSEStream_SkipsMalformedLines(t *testing.T) {
 	req := worker.GenLLMJSONRequestBody{Model: &modelID, MaxTokens: &maxTokens}
 	sess := makeTestSession("http://orch:8935")
 
-	ch, err := handleSSEStream(context.Background(), r, sess, req, time.Now())
+	ch, err := handleSSEStream(context.Background(), "tok-test", r, sess, req, time.Now())
 	require.NoError(t, err)
 
 	var chunks []*worker.LLMResponse
