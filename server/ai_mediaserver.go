@@ -72,6 +72,8 @@ func startAIMediaServer(ls *LivepeerServer) error {
 	ls.HTTPMux.Handle("/audio-to-text", oapiReqValidator(ls.AudioToText()))
 	ls.HTTPMux.Handle("/llm", oapiReqValidator(ls.LLM()))
 	ls.HTTPMux.Handle("/segment-anything-2", oapiReqValidator(ls.SegmentAnything2()))
+	ls.HTTPMux.Handle("/segment-anything-2-video", oapiReqValidator(ls.SegmentAnything2Video()))
+	
 
 	return nil
 }
@@ -509,6 +511,59 @@ func (ls *LivepeerServer) SegmentAnything2() http.Handler {
 
 		took := time.Since(start)
 		clog.V(common.VERBOSE).Infof(ctx, "Processed SegmentAnything2 request model_id=%v took=%v", *req.ModelId, took)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+}
+
+func (ls *LivepeerServer) SegmentAnything2Video() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remoteAddr := getRemoteAddr(r)
+		ctx := clog.AddVal(r.Context(), clog.ClientIP, remoteAddr)
+		requestID := string(core.RandomManifestID())
+		ctx = clog.AddVal(ctx, "request_id", requestID)
+
+		multiRdr, err := r.MultipartReader()
+		if err != nil {
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+
+		var req worker.GenSegmentAnything2VideoMultipartRequestBody
+		if err := runtime.BindMultipart(&req, *multiRdr); err != nil {
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+
+		clog.V(common.VERBOSE).Infof(ctx, "Received SegmentAnything2Video request; video_size=%v model_id=%v", req.MediaFile.FileSize(), *req.ModelId)
+
+		params := aiRequestParams{
+			node:        ls.LivepeerNode,
+			os:          drivers.NodeStorage.NewSession(requestID),
+			sessManager: ls.AISessionManager,
+		}
+
+		start := time.Now()
+		resp, err := processSegmentAnything2Video(ctx, params, req)
+		if err != nil {
+			var serviceUnavailableErr *ServiceUnavailableError
+			var badRequestErr *BadRequestError
+			if errors.As(err, &serviceUnavailableErr) {
+				respondJsonError(ctx, w, err, http.StatusServiceUnavailable)
+				return
+			}
+			if errors.As(err, &badRequestErr) {
+				respondJsonError(ctx, w, err, http.StatusBadRequest)
+				return
+			}
+			respondJsonError(ctx, w, err, http.StatusInternalServerError)
+			return
+		}
+
+		took := time.Since(start)
+		clog.V(common.VERBOSE).Infof(ctx, "Processed SegmentAnything2Video request model_id=%v took=%v", *req.ModelId, took)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

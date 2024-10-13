@@ -46,6 +46,7 @@ func startAIServer(lp lphttp) error {
 	lp.transRPC.Handle("/audio-to-text", oapiReqValidator(lp.AudioToText()))
 	lp.transRPC.Handle("/llm", oapiReqValidator(lp.LLM()))
 	lp.transRPC.Handle("/segment-anything-2", oapiReqValidator(lp.SegmentAnything2()))
+	lp.transRPC.Handle("/segment-anything-2-video", oapiReqValidator(lp.SegmentAnything2Video()))
 
 	return nil
 }
@@ -173,6 +174,29 @@ func (h *lphttp) SegmentAnything2() http.Handler {
 		}
 
 		var req worker.GenSegmentAnything2MultipartRequestBody
+		if err := runtime.BindMultipart(&req, *multiRdr); err != nil {
+			respondWithError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		handleAIRequest(ctx, w, r, orch, req)
+	})
+}
+
+func (h *lphttp) SegmentAnything2Video() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orch := h.orchestrator
+
+		remoteAddr := getRemoteAddr(r)
+		ctx := clog.AddVal(r.Context(), clog.ClientIP, remoteAddr)
+
+		multiRdr, err := r.MultipartReader()
+		if err != nil {
+			respondWithError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var req worker.GenSegmentAnything2VideoMultipartRequestBody
 		if err := runtime.BindMultipart(&req, *multiRdr); err != nil {
 			respondWithError(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -363,6 +387,22 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 			return
 		}
 		outPixels = int64(config.Height) * int64(config.Width)
+
+	case *worker.GenSegmentAnything2VideoMultipartRequestBody:
+		pipeline = "segment-anything-2-video"
+		cap = core.Capability_SegmentAnything2Video
+		modelID = *v.ModelId
+		submitFn = func(ctx context.Context) (interface{}, error) {
+			return orch.SegmentAnything2Video(ctx, v)
+		}
+
+		//TODO: Establish pricing for video segmenting
+		outPixels, err = common.CalculateAudioDuration(v.MediaFile)
+		if err != nil {
+			respondWithError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		
 	default:
 		respondWithError(w, "Unknown request type", http.StatusBadRequest)
 		return

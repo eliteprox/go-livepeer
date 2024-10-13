@@ -55,6 +55,11 @@ type orchestrator struct {
 	secret  []byte
 }
 
+// SegmentAnything2Video implements server.Orchestrator.
+func (orch *orchestrator) SegmentAnything2Video(ctx context.Context, req worker.BodyGenSegmentAnything2Video) (*worker.VideoSegmentResponse, error) {
+	return orch.node.SegmentAnything2Video(ctx, req)
+}
+
 func (orch *orchestrator) ServiceURI() *url.URL {
 	return orch.node.GetServiceURI()
 }
@@ -982,6 +987,10 @@ func (n *LivepeerNode) upscale(ctx context.Context, req worker.GenUpscaleMultipa
 
 func (n *LivepeerNode) AudioToText(ctx context.Context, req worker.GenAudioToTextMultipartRequestBody) (*worker.TextResponse, error) {
 	return n.AIWorker.AudioToText(ctx, req)
+}
+
+func (n *LivepeerNode) SegmentAnything2Video(ctx context.Context, req worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error) {
+	return n.AIWorker.SegmentAnything2Video(ctx, req)
 }
 
 func (n *LivepeerNode) SegmentAnything2(ctx context.Context, req worker.GenSegmentAnything2MultipartRequestBody) (*worker.MasksResponse, error) {

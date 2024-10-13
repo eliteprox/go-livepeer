@@ -706,6 +706,17 @@ func submitSegmentAnything2(ctx context.Context, params aiRequestParams, sess *A
 	return resp.JSON200, nil
 }
 
+func processSegmentAnything2Video(ctx context.Context, params aiRequestParams, req worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error) {
+	resp, err := processAIRequest(ctx, params, req)
+	if err != nil {
+		return nil, err
+	}
+
+	txtResp := resp.(*worker.VideoSegmentResponse)
+
+	return txtResp, nil
+}
+
 // CalculateAudioToTextLatencyScore computes the time taken per second of audio for an audio-to-text request.
 func CalculateAudioToTextLatencyScore(took time.Duration, durationSeconds int64) float64 {
 	if durationSeconds <= 0 {
