@@ -388,7 +388,7 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 		}
 		outPixels = int64(config.Height) * int64(config.Width)
 
-	case *worker.GenSegmentAnything2VideoMultipartRequestBody:
+	case worker.GenSegmentAnything2VideoMultipartRequestBody:
 		pipeline = "segment-anything-2-video"
 		cap = core.Capability_SegmentAnything2Video
 		modelID = *v.ModelId
