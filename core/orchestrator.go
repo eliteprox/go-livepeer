@@ -55,11 +55,6 @@ type orchestrator struct {
 	secret  []byte
 }
 
-// SegmentAnything2Video implements server.Orchestrator.
-func (orch *orchestrator) SegmentAnything2Video(ctx context.Context, req worker.BodyGenSegmentAnything2Video) (*worker.VideoSegmentResponse, error) {
-	return orch.node.SegmentAnything2Video(ctx, req)
-}
-
 func (orch *orchestrator) ServiceURI() *url.URL {
 	return orch.node.GetServiceURI()
 }
@@ -143,6 +138,10 @@ func (orch *orchestrator) LLM(ctx context.Context, req worker.GenLLMFormdataRequ
 
 func (orch *orchestrator) SegmentAnything2(ctx context.Context, req worker.GenSegmentAnything2MultipartRequestBody) (*worker.MasksResponse, error) {
 	return orch.node.SegmentAnything2(ctx, req)
+}
+
+func (orch *orchestrator) SegmentAnything2Video(ctx context.Context, req worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error) {
+	return orch.node.SegmentAnything2Video(ctx, req)
 }
 
 func (orch *orchestrator) ProcessPayment(ctx context.Context, payment net.Payment, manifestID ManifestID) error {
