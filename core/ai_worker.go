@@ -751,6 +751,42 @@ func (orch *orchestrator) SegmentAnything2(ctx context.Context, requestID string
 	return res.Results, nil
 }
 
+func (orch *orchestrator) SegmentAnything2Video(ctx context.Context, requestID string, req worker.GenSegmentAnything2VideoMultipartRequestBody) (interface{}, error) {
+	// local AIWorker processes job if combined orchestrator/ai worker
+	if orch.node.AIWorker != nil {
+		// no file response to save, response is text sent back to gateway
+		return orch.node.SegmentAnything2Video(ctx, req)
+	}
+
+	// remote ai worker proceses job
+	imgBytes, err := req.MediaFile.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	inputUrl, err := orch.SaveAIRequestInput(ctx, requestID, imgBytes)
+	if err != nil {
+		return nil, err
+	}
+	req.MediaFile.InitFromBytes(nil, "") // remove image data
+
+	res, err := orch.node.AIWorkerManager.Process(ctx, requestID, "segment-anything-2-video", *req.ModelId, inputUrl, AIJobRequestData{Request: req, InputUrl: inputUrl})
+	if err != nil {
+		return nil, err
+	}
+
+	res, err = orch.node.saveRemoteAIWorkerResults(ctx, res, requestID)
+	if err != nil {
+		clog.Errorf(ctx, "Error saving remote ai result err=%q", err)
+		if monitor.Enabled {
+			monitor.AIResultSaveError(ctx, "segment-anything-2-video", *req.ModelId, string(monitor.SegmentUploadErrorUnknown))
+		}
+		return nil, err
+	}
+
+	return res.Results, nil
+}
+
 // Return type is LLMResponse, but a stream is available as well as chan(string)
 func (orch *orchestrator) LLM(ctx context.Context, requestID string, req worker.GenLLMFormdataRequestBody) (interface{}, error) {
 	// local AIWorker processes job if combined orchestrator/ai worker
@@ -1013,6 +1049,10 @@ func (n *LivepeerNode) ImageToVideo(ctx context.Context, req worker.GenImageToVi
 
 func (n *LivepeerNode) SegmentAnything2(ctx context.Context, req worker.GenSegmentAnything2MultipartRequestBody) (*worker.MasksResponse, error) {
 	return n.AIWorker.SegmentAnything2(ctx, req)
+}
+
+func (n *LivepeerNode) SegmentAnything2Video(ctx context.Context, req worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error) {
+	return n.AIWorker.SegmentAnything2Video(ctx, req)
 }
 
 func (n *LivepeerNode) LLM(ctx context.Context, req worker.GenLLMFormdataRequestBody) (interface{}, error) {

@@ -25,6 +25,7 @@ type AI interface {
 	AudioToText(context.Context, worker.GenAudioToTextMultipartRequestBody) (*worker.TextResponse, error)
 	LLM(context.Context, worker.GenLLMFormdataRequestBody) (interface{}, error)
 	SegmentAnything2(context.Context, worker.GenSegmentAnything2MultipartRequestBody) (*worker.MasksResponse, error)
+	SegmentAnything2Video(context.Context, worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error)
 	ImageToText(context.Context, worker.GenImageToTextMultipartRequestBody) (*worker.ImageToTextResponse, error)
 	TextToSpeech(context.Context, worker.GenTextToSpeechJSONRequestBody) (*worker.AudioResponse, error)
 	Warm(context.Context, string, string, worker.RunnerEndpoint, worker.OptimizationFlags) error

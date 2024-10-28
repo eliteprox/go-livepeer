@@ -876,6 +876,91 @@ func submitTextToSpeech(ctx context.Context, params aiRequestParams, sess *AISes
 	return &res, nil
 }
 
+func submitSegmentAnything2Video(ctx context.Context, params aiRequestParams, sess *AISession, req worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error) {
+	var buf bytes.Buffer
+	mw, err := worker.NewSegmentAnything2VideoMultipartWriter(&buf, req)
+	if err != nil {
+		if monitor.Enabled {
+			monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+		}
+		return nil, err
+	}
+
+	client, err := worker.NewClientWithResponses(sess.Transcoder(), worker.WithHTTPClient(httpClient))
+	if err != nil {
+		if monitor.Enabled {
+			monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+		}
+		return nil, err
+	}
+
+	if err != nil {
+		if monitor.Enabled {
+			monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+		}
+		return nil, err
+	}
+
+	outPixels, err := common.CalculateAudioDuration(req.MediaFile)
+	if err != nil {
+		monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+	}
+
+	setHeaders, balUpdate, err := prepareAIPayment(ctx, sess, outPixels)
+	if err != nil {
+		if monitor.Enabled {
+			monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+		}
+		return nil, err
+	}
+	defer completeBalanceUpdate(sess.BroadcastSession, balUpdate)
+
+	start := time.Now()
+	resp, err := client.GenSegmentAnything2VideoWithBodyWithResponse(ctx, mw.FormDataContentType(), &buf, setHeaders)
+	took := time.Since(start)
+	if err != nil {
+		if monitor.Enabled {
+			monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+		}
+		return nil, err
+	}
+
+	if resp.JSON200 == nil {
+		// TODO: Replace trim newline with better error spec from O
+		return nil, errors.New(strings.TrimSuffix(string(resp.Body), "\n"))
+	}
+
+	// We treat a response as "receiving change" where the change is the difference between the credit and debit for the update
+	if balUpdate != nil {
+		balUpdate.Status = ReceivedChange
+	}
+
+	// TODO: Update for segment-anything-2-video
+	sess.LatencyScore = CalculateSegmentAnything2LatencyScore(took, outPixels)
+
+	if monitor.Enabled {
+		var pricePerAIUnit float64
+		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
+			pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
+		}
+
+		monitor.AIRequestFinished(ctx, "segment anything 2 video", *req.ModelId, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
+	}
+
+	return resp.JSON200, nil
+}
+
+func processSegmentAnything2Video(ctx context.Context, params aiRequestParams, req worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error) {
+	resp, err := processAIRequest(ctx, params, req)
+	if err != nil {
+		return nil, err
+	}
+
+	txtResp := resp.(*worker.VideoSegmentResponse)
+
+	return txtResp, nil
+}
+
 // CalculateAudioToTextLatencyScore computes the time taken per second of audio for an audio-to-text request.
 func CalculateAudioToTextLatencyScore(took time.Duration, durationSeconds int64) float64 {
 	if durationSeconds <= 0 {
@@ -1358,6 +1443,16 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 					return submitLiveVideoToVideo(ctx, params, sess, v)
 				}
 		*/
+	case worker.GenSegmentAnything2VideoMultipartRequestBody:
+		cap = core.Capability_SegmentAnything2Video
+		modelID = defaultSegmentAnything2ModelID
+		if v.ModelId != nil {
+			modelID = *v.ModelId
+		}
+		submitFn = func(ctx context.Context, params aiRequestParams, sess *AISession) (interface{}, error) {
+			return submitSegmentAnything2Video(ctx, params, sess, v)
+		}
+
 	default:
 		return nil, fmt.Errorf("unsupported request type %T", req)
 	}

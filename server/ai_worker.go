@@ -270,6 +270,23 @@ func runAIJob(n *core.LivepeerNode, orchAddr string, httpc *http.Client, notify 
 			return n.SegmentAnything2(ctx, req)
 		}
 		reqOk = true
+	case "segment-anything-2-video":
+		var req worker.GenSegmentAnything2VideoMultipartRequestBody
+		err = json.Unmarshal(reqData.Request, &req)
+		if err != nil || req.ModelId == nil {
+			break
+		}
+		input, err = core.DownloadData(ctx, reqData.InputUrl)
+		if err != nil {
+			break
+		}
+		modelID = *req.ModelId
+		resultType = "application/json"
+		req.MediaFile.InitFromBytes(input, "image")
+		processFn = func(ctx context.Context) (interface{}, error) {
+			return n.SegmentAnything2Video(ctx, req)
+		}
+		reqOk = true
 	case "llm":
 		var req worker.GenLLMFormdataRequestBody
 		err = json.Unmarshal(reqData.Request, &req)
