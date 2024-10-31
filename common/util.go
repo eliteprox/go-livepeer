@@ -483,7 +483,7 @@ func CalculateAudioDuration(audio types.File) (int64, error) {
 	return duration, nil
 }
 
-// CalculateAudioDuration calculates audio file duration using the lpms/ffmpeg package.
+// GetMediaInfo returns the media format info for a given media file
 func GetMediaInfo(media types.File) (ffmpeg.MediaFormatInfo, error) {
 	read, err := media.Reader()
 	if err != nil {
