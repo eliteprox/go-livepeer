@@ -13,7 +13,7 @@ require (
 	github.com/golang/protobuf v1.5.4
 	github.com/jaypipes/ghw v0.10.0
 	github.com/jaypipes/pcidb v1.0.0
-	github.com/livepeer/ai-worker v0.10.1-0.20241028165737-658cf87a0ef8
+	github.com/livepeer/ai-worker v0.10.1-0.20241031222237-568dfcc10ce4
 	github.com/livepeer/go-tools v0.3.6-0.20240130205227-92479de8531b
 	github.com/livepeer/livepeer-data v0.7.5-0.20231004073737-06f1f383fb18
 	github.com/livepeer/lpms v0.0.0-20240909171057-fe5aff1fa6a2
@@ -256,7 +256,3 @@ require (
 	lukechampine.com/blake3 v1.2.1 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
-
-// replace github.com/livepeer/ai-worker => ../ai-worker
-
-// replace github.com/livepeer/ai-worker => github.com/livepeer/ai-worker v0.10.1-0.20241028165737-658cf87a0ef8
