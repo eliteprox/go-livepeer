@@ -470,10 +470,9 @@ func CalculateAudioDuration(audio types.File) (int64, error) {
 	}
 	defer read.Close()
 
-	bytearr, _ := audio.Bytes()
-	_, mediaFormat, err := ffmpeg.GetCodecInfoBytes(bytearr)
+	mediaFormat, err := GetMediaInfo(audio)
 	if err != nil {
-		return 0, errors.New("Error getting codec info")
+		return 0, ErrAudioDurationCalculation
 	}
 
 	duration := int64(mediaFormat.DurSecs)
@@ -482,6 +481,23 @@ func CalculateAudioDuration(audio types.File) (int64, error) {
 	}
 
 	return duration, nil
+}
+
+// CalculateAudioDuration calculates audio file duration using the lpms/ffmpeg package.
+func GetMediaInfo(media types.File) (ffmpeg.MediaFormatInfo, error) {
+	read, err := media.Reader()
+	if err != nil {
+		return ffmpeg.MediaFormatInfo{}, err
+	}
+	defer read.Close()
+
+	bytearr, _ := media.Bytes()
+	_, mediaFormat, err := ffmpeg.GetCodecInfoBytes(bytearr)
+	if err != nil {
+		return ffmpeg.MediaFormatInfo{}, errors.New("Error getting codec info")
+	}
+
+	return mediaFormat, nil
 }
 
 // ValidateServiceURI checks if the serviceURI is valid.

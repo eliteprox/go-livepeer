@@ -901,10 +901,17 @@ func submitSegmentAnything2Video(ctx context.Context, params aiRequestParams, se
 		return nil, err
 	}
 
-	outPixels, err := common.CalculateAudioDuration(req.MediaFile)
-	if err != nil {
-		monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+	mediaFormat, err := common.GetMediaInfo(req.MediaFile)
+	if err != nil || mediaFormat.DurSecs == 0 || mediaFormat.FPS == 0 {
+		if monitor.Enabled {
+			monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+		}
+		return nil, err
 	}
+
+	// Calculate the number of pixels in the video based on FPS, duration and resolution
+	frameCount := int64(mediaFormat.FPS) /int64(mediaFormat.DurSecs)
+	outPixels := frameCount * int64(mediaFormat.Height * mediaFormat.Width)
 
 	setHeaders, balUpdate, err := prepareAIPayment(ctx, sess, outPixels)
 	if err != nil {
