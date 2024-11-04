@@ -877,6 +877,14 @@ func submitTextToSpeech(ctx context.Context, params aiRequestParams, sess *AISes
 }
 
 func submitSegmentAnything2Video(ctx context.Context, params aiRequestParams, sess *AISession, req worker.GenSegmentAnything2VideoMultipartRequestBody) (*worker.VideoSegmentResponse, error) {
+	if req.MediaFile.FileSize() == 0 {
+		err := &BadRequestError{errors.New("media file is required")}
+		if monitor.Enabled {
+			monitor.AIRequestError(err.Error(), "segment anything 2 video", *req.ModelId, sess.OrchestratorInfo)
+		}
+		return nil, err
+	}
+
 	var buf bytes.Buffer
 	mw, err := worker.NewSegmentAnything2VideoMultipartWriter(&buf, req)
 	if err != nil {
