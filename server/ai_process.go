@@ -906,7 +906,7 @@ func processAudioToText(ctx context.Context, params aiRequestParams, req worker.
 }
 
 func submitAudioToText(ctx context.Context, params aiRequestParams, sess *AISession, req worker.GenAudioToTextMultipartRequestBody) (*worker.TextResponse, error) {
-	durationSeconds, err := common.CalculateAudioDuration(req.Audio)
+	durationSeconds, _, err := common.CalculateAudioDuration(req.Audio)
 	if err != nil {
 		if monitor.Enabled {
 			monitor.AIRequestError(err.Error(), "audio-to-text", *req.ModelId, sess.OrchestratorInfo)

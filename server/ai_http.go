@@ -235,11 +235,27 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 			return orch.AudioToText(ctx, requestID, v)
 		}
 
-		outPixels, err = common.CalculateAudioDuration(v.Audio)
+		if err != nil {
+			respondWithError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		outPixels, isVideo, err := common.CalculateAudioDuration(v.Audio)
 		if err != nil {
 			respondWithError(w, "Unable to calculate duration", http.StatusBadRequest)
 			return
 		}
+		
+		//If file contains video, extract audio from video
+		if (isVideo) {
+			data, err := common.ExtractAudio(ctx, v.Audio)
+			if err != nil {
+				respondWithError(w, "Unable to extract audio", http.StatusBadRequest)
+				return
+			}
+			v.Audio = common.BytesToFile(v.Audio, data, "audio.aac")
+		}
+
 		outPixels *= 1000 // Convert to milliseconds
 	case worker.GenLLMFormdataRequestBody:
 		pipeline = "llm"
@@ -401,7 +417,7 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 		case worker.GenUpscaleMultipartRequestBody:
 			latencyScore = CalculateUpscaleLatencyScore(took, v, outPixels)
 		case worker.GenAudioToTextMultipartRequestBody:
-			durationSeconds, err := common.CalculateAudioDuration(v.Audio)
+			durationSeconds, _, err := common.CalculateAudioDuration(v.Audio)
 			if err == nil {
 				latencyScore = CalculateAudioToTextLatencyScore(took, durationSeconds)
 			}

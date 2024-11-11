@@ -12,6 +12,8 @@ import (
 	"math/rand"
 	"mime"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -463,27 +465,80 @@ func ParseEthAddr(strJsonKey string) (string, error) {
 }
 
 // CalculateAudioDuration calculates audio file duration using the lpms/ffmpeg package.
-func CalculateAudioDuration(audio types.File) (int64, error) {
+func CalculateAudioDuration(audio types.File) (int64, bool, error) {
 	read, err := audio.Reader()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer read.Close()
 
 	bytearr, _ := audio.Bytes()
 	_, mediaFormat, err := ffmpeg.GetCodecInfoBytes(bytearr)
 	if err != nil {
-		return 0, errors.New("Error getting codec info")
+		return 0, false, errors.New("Error getting codec info")
 	}
-
+	
 	duration := int64(mediaFormat.DurSecs)
+	isVideo := mediaFormat.PixFormat.RawValue != -1
 	if duration <= 0 {
-		return 0, ErrAudioDurationCalculation
+		return 0, isVideo, ErrAudioDurationCalculation
 	}
-
-	return duration, nil
+	
+	return duration, isVideo, nil
 }
 
+// ExtractAudio extracts audio from a video file and returns the audio data as a byte slice.
+func ExtractAudio(ctx context.Context, media types.File) ([]byte, error) {
+	read, err := media.Reader()
+	if err != nil {
+		return nil, err
+	}
+	defer read.Close()
+
+	bytearr, _ := media.Bytes()
+	_, mediaFormat, err := ffmpeg.GetCodecInfoBytes(bytearr)
+	if err != nil {
+		return nil, errors.New("Error getting codec info")
+	}
+	
+	acodec := mediaFormat.Acodec
+
+	// Create temporary directory
+	tmpDir, err := os.MkdirTemp("", "audio_extract_*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir) // Clean up temp directory when done
+
+	// Write video data to temp file
+	tmpVideo := filepath.Join(tmpDir, media.Filename())
+	if err := os.WriteFile(tmpVideo, bytearr, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write temp video file: %v", err)
+	}
+
+	in := &ffmpeg.TranscodeOptionsIn{
+		Fname: tmpVideo,
+	}
+	
+	outPath := filepath.Join(tmpDir, "extracted." + acodec)
+	out := []ffmpeg.TranscodeOptions{{
+		Oname: outPath,
+		VideoEncoder: ffmpeg.ComponentOptions{Name: "drop"},
+		AudioEncoder: ffmpeg.ComponentOptions{Name: "copy"},
+	}}
+
+	_, err = ffmpeg.Transcode3(in, out)
+	if err != nil {
+		return nil, err
+	}
+
+	return os.ReadFile(outPath)
+}
+
+func BytesToFile(f types.File, b []byte, filename string) types.File {
+	f.InitFromBytes(b, filename)
+	return f
+}
 // ValidateServiceURI checks if the serviceURI is valid.
 func ValidateServiceURI(serviceURI *url.URL) bool {
 	return !strings.Contains(serviceURI.Host, "0.0.0.0")
