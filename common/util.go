@@ -520,6 +520,7 @@ func ExtractAudio(ctx context.Context, media types.File) ([]byte, error) {
 		Fname: tmpVideo,
 	}
 	
+	fmt.Printf("Extracting audio with codec: %s\n", acodec)
 	outPath := filepath.Join(tmpDir, "extracted." + acodec)
 	out := []ffmpeg.TranscodeOptions{{
 		Oname: outPath,

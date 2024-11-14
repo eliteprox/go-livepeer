@@ -235,11 +235,6 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 			return orch.AudioToText(ctx, requestID, v)
 		}
 
-		if err != nil {
-			respondWithError(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
 		outPixels, isVideo, err := common.CalculateAudioDuration(v.Audio)
 		if err != nil {
 			respondWithError(w, "Unable to calculate duration", http.StatusBadRequest)
@@ -253,7 +248,9 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 				respondWithError(w, "Unable to extract audio", http.StatusBadRequest)
 				return
 			}
-			v.Audio = common.BytesToFile(v.Audio, data, "audio.aac")
+
+			fname := v.Audio.Filename()
+			v.Audio = common.BytesToFile(v.Audio, data, fname + ".aac")
 		}
 
 		outPixels *= 1000 // Convert to milliseconds
