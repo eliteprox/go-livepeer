@@ -320,40 +320,6 @@ func TestRecoverFromPanic_WithError(t *testing.T) {
 	assert.Equal(NewUnrecoverableError(sampleErr), err)
 }
 
-// func TestTranscoder_ExtractAudio(t *testing.T) {
-// 	dir := t.TempDir()
-// 	run := func(cmd string) {
-// 		if err := exec.Command("bash", "-c", cmd).Run(); err != nil {
-// 			t.Fatal(err)
-// 		}
-// 	}
-//     defer os.RemoveAll(dir)
-
-//     in := &ffmpeg.TranscodeOptionsIn{
-//         Fname: "../test.mp4",
-//     }
-    
-// 	out := []ffmpeg.TranscodeOptions{{
-// 		Oname: dir + "/extracted.aac",
-// 		VideoEncoder: ffmpeg.ComponentOptions{Name: "drop"},
-// 		AudioEncoder: ffmpeg.ComponentOptions{Name: "aac"},
-// 	}}
-
-//     _, err := ffmpeg.Transcode3(in, out)
-// 	if err != nil {
-// 		t.Log("Error extracting audio:", err)
-// 		t.Error(err)
-// 	}
-// 	t.Log("Successfully extracted audio")
-
-
-//     // Verify the output exists and has audio
-//     cmd := `
-//         ffprobe -loglevel warning -show_streams -select_streams a extracted.aac | grep codec_name=aac
-//         ffprobe -loglevel warning -show_format extracted.aac | grep format_name=aac
-//     `
-//     run(cmd)
-// }
 func TestTranscoder_ExtractAudio(t *testing.T) {
 	dir := t.TempDir()
 	defer os.RemoveAll(dir)
@@ -394,52 +360,4 @@ func TestTranscoder_ExtractAudio(t *testing.T) {
 	}
 
 	t.Logf("Audio duration: %d seconds", duration)
-
-
-
-	// run := func(cmd string) {
-	// 	if err := exec.Command("bash", "-c", cmd).Run(); err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// }
-	// // Verify the output exists and has audio 
-	// cmd := fmt.Sprintf(`
-	// 	cd %s && ffprobe -loglevel warning -show_streams -select_streams a extracted.mp4 > probe.txt
-	// 	cd %s && ffprobe -loglevel warning -show_format extracted.mp4 >> probe.txt
-	// `, dir, dir)
-	// run(cmd)
-
-	// // Read and log the probe output
-	// probeOutput, err := ioutil.ReadFile(dir + "/probe.txt") 
-	// if err != nil {
-	// 	t.Error("Error reading probe output:", err)
-	// }
-	// t.Logf("FFprobe output:\n%s", string(probeOutput))
 }
-
-// func TestTranscoder_ExtractAudio4(t *testing.T) {
-//     run, dir := setupTest(t)
-//     defer os.RemoveAll(dir)
-
-//     in := &TranscodeOptionsIn{
-//         Fname: "../data/bunny2.mp4",
-//     }
-    
-//     out := []TranscodeOptions{{
-//         Oname: dir + "/extracted.out",
-//         VideoEncoder: ComponentOptions{Name: "drop"},
-//         AudioEncoder: ComponentOptions{Name: "copy"},
-//     }}
-
-//     _, err := Transcode3(in, out)
-//     if err != nil {
-//         t.Error(err)
-//     }
-
-//     // Verify the output exists and has audio
-//     cmd := `
-//         ffprobe -loglevel warning -show_streams -select_streams a extracted.out | grep codec_name=flac
-//         ffprobe -loglevel warning -show_format extracted.out | grep format_name=flac
-//     `
-//     run(cmd)
-// }
