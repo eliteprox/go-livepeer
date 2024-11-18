@@ -396,6 +396,10 @@ func (ls *LivepeerServer) StartLiveVideo() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		//parse model from query params
+		model := qp.Get("model")
+
 		// If auth webhook is set and returns an output URL, this will be replaced
 		outputURL := qp.Get("rtmpOutput")
 		if outputURL == "" {
@@ -450,6 +454,7 @@ func (ls *LivepeerServer) StartLiveVideo() http.Handler {
 		}
 
 		req := worker.GenLiveVideoToVideoJSONRequestBody{
+			ModelId: &model,
 			// TODO set model and initial parameters here if necessary (eg, prompt)
 		}
 		processAIRequest(ctx, params, req)
