@@ -256,21 +256,18 @@ func (rs *RelayServer) createWHEPSession(body []byte, contentType string, stream
 
 	err = peerConn.SetRemoteDescription(offer)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to set remote description: %v", err), http.StatusBadRequest)
-		return
+		return "", http.StatusBadRequest, errors.New(fmt.Sprintf("Failed to set remote description: %v", err))
 	}
 
 	// Create answer
 	answer, err := peerConn.CreateAnswer(nil)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create answer: %v", err), http.StatusInternalServerError)
-		return
+		return "", http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to create answer: %v", err))
 	}
 
 	err = peerConn.SetLocalDescription(answer)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to set local description: %v", err), http.StatusInternalServerError)
-		return
+		return "", http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to set local description: %v", err))
 	}
 
 	// Store session
@@ -278,15 +275,10 @@ func (rs *RelayServer) createWHEPSession(body []byte, contentType string, stream
 	rs.egress = append(rs.egress, session)
 	rs.mu.Unlock()
 
-	// Set response headers
-	w.Header().Set("Content-Type", "application/sdp")
-	w.Header().Set("Location", fmt.Sprintf("/whep/%s", sessionID))
-	w.WriteHeader(http.StatusCreated)
-
-	// Send SDP answer
-	w.Write([]byte(answer.SDP))
-
 	log.Printf("Created WHEP session: %s", sessionID)
+
+	return answer.SDP, http.StatusCreated, nil
+
 }
 
 func (rs *RelayServer) addTracksToWHEPSession(session *WHEPSession) {

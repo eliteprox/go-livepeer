@@ -77,6 +77,7 @@ type JobRequestDetails struct {
 	StartStream       bool   `json:"start_stream,omitempty"`
 	StartStreamOutput bool   `json:"start_stream_output,omitempty"`
 	UpdateStream      bool   `json:"update_stream,omitempty"`
+	StopStream        bool   `json:"stop_stream,omitempty"` //if true, the stream will be stopped and removed from the orchestrator
 	StreamID          string `json:"stream_id,omitempty"`
 }
 
@@ -341,10 +342,37 @@ func (h *lphttp) ProcessWorkerWHEP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Stream %s not found", streamID), http.StatusNotFound)
 		return
 	}
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		clog.Errorf(ctx, "Error reading request body: %v", err)
+		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		return
+	}
 	// Create WHEP session for results from worker
+	var answer string
+	if fn, ok := stream.AddStreamWhep.(func([]byte, string, string) (string, int, error)); ok {
+		whepAnswer, statusCode, err := fn(body, r.Header.Get("Content-Type"), streamID)
+		if err != nil {
+			clog.Errorf(ctx, "Error creating WHEP session err=%v", err)
+			http.Error(w, fmt.Sprintf("Error creating WHEP session err=%v", err), statusCode)
+			return
+		}
+		answer = whepAnswer
 
-	// Gateway node
-	ls.submitJob(ctx, w, r)
+	} else {
+		clog.Errorf(ctx, "AddStreamWhep is not a valid function")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/sdp")
+	w.Header().Set("Location", fmt.Sprintf("/process/worker/whep/%s", streamID))
+	w.WriteHeader(http.StatusCreated)
+
+	// Send SDP answer
+	w.Write([]byte(answer))
 }
 
 func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, r *http.Request) {
@@ -520,6 +548,12 @@ func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, 
 
 			gatewayBalance := updateGatewayBalance(ls.LivepeerNode, orchToken, jobReq.Capability, time.Since(start))
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance)
+
+			// set WHIP/WHEP response headers if applicable
+			if jobReqDetails.StartStreamOutput || jobReqDetails.UpdateStream || jobReqDetails.StartStream || jobReqDetails.StopStream {
+				w.Header().Set("Content-Type", "application/sdp")
+				w.Header().Set("Location", fmt.Sprintf("/process/request/whip/%s", jobReqDetails.StreamID))
+			}
 			w.Write(data)
 			return
 		} else {
@@ -690,7 +724,7 @@ func processJob(ctx context.Context, h *lphttp, w http.ResponseWriter, r *http.R
 
 		streamCtx, cancel := context.WithCancel(context.Background())
 		relay, addWhep := NewRelayServer(streamCtx)
-		_, whipAnswer, status_code, err := relay.createWHIPSession(body, r.Header.Get("Content-Type"), jobReqDetails.StreamID, "")
+		_, whipAnswer, status_code, err := relay.createWHIPSession(body, r.Header.Get("Content-Type"), jobReqDetails.StreamID)
 
 		if err != nil {
 			clog.Errorf(ctx, "Error creating WHIP session err=%v", err)
@@ -700,12 +734,12 @@ func processJob(ctx context.Context, h *lphttp, w http.ResponseWriter, r *http.R
 		// Store session information
 		answer = whipAnswer
 		h.node.ExternalCapabilities.Streams[jobReqDetails.StreamID] = &core.StreamData{
-			StreamID:     jobReqDetails.StreamID,
-			StreamCtx:    streamCtx,
-			CancelStream: cancel,
-			Sender:       sender,
+			StreamID:      jobReqDetails.StreamID,
+			StreamCtx:     streamCtx,
+			CancelStream:  cancel,
+			AddStreamWhep: addWhep,
+			Sender:        sender,
 		}
-
 	}
 	// Extract the worker resource route from the URL path
 	// The prefix is "/process/request/"
@@ -781,6 +815,14 @@ func processJob(ctx context.Context, h *lphttp, w http.ResponseWriter, r *http.R
 		chargeForCompute(start, jobPrice, orch, sender, jobId)
 		w.Header().Set(jobPaymentBalanceHdr, getPaymentBalance(orch, sender, jobId).FloatString(0))
 		clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v", time.Since(start), getPaymentBalance(orch, sender, jobId).FloatString(0))
+
+		if jobReqDetails.StartStreamOutput || jobReqDetails.UpdateStream || jobReqDetails.StartStream || jobReqDetails.StopStream {
+			w.Header().Set("Content-Type", "application/sdp")
+			w.Header().Set("Location", fmt.Sprintf("/process/request/whip/%s", jobReqDetails.StreamID))
+			w.Write([]byte(answer))
+			return
+		}
+
 		w.Write(data)
 		//request completed and returned a response
 
