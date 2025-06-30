@@ -740,7 +740,44 @@ func processJob(ctx context.Context, h *lphttp, w http.ResponseWriter, r *http.R
 			AddStreamWhep: addWhep,
 			Sender:        sender,
 		}
+		//override the body to just include the stream ID for the worker to use to create
+		// the WHIP request to send the results back to the Orchestrator
+		body = []byte(jobReqDetails.StreamID)
+
 	}
+
+	if jobReqDetails.StartStreamOutput {
+		clog.Infof(ctx, "starting stream output with id %v", jobReqDetails.StreamID)
+		stream, ok := h.node.ExternalCapabilities.Streams[jobReqDetails.StreamID]
+		if !ok {
+			clog.Errorf(ctx, "Stream %s not found", jobReqDetails.StreamID)
+			http.Error(w, fmt.Sprintf("Stream %s not found", jobReqDetails.StreamID), http.StatusNotFound)
+			return
+		}
+
+		var answer string
+		if fn, ok := stream.WorkerAddStreamWhep.(func([]byte, string, string) (string, int, error)); ok {
+			whepAnswer, statusCode, err := fn(body, r.Header.Get("Content-Type"), jobReqDetails.StreamID)
+			if err != nil {
+				clog.Errorf(ctx, "Error creating WHEP session err=%v", err)
+				http.Error(w, fmt.Sprintf("Error creating WHEP session err=%v", err), statusCode)
+				return
+			}
+			answer = whepAnswer
+		} else {
+			clog.Errorf(ctx, "AddStreamWhep is not a valid function")
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/sdp")
+		w.Header().Set("Location", fmt.Sprintf("/process/request/whep/%s", jobReqDetails.StreamID))
+		w.WriteHeader(http.StatusCreated)
+		// Send SDP answer
+		w.Write([]byte(answer))
+		return
+	}
+
 	// Extract the worker resource route from the URL path
 	// The prefix is "/process/request/"
 	// if the request does not include the last / of the prefix no additional url path is added
