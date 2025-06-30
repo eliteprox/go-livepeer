@@ -42,6 +42,8 @@ const jobOrchSearchRespTimeoutHdr = "Livepeer-Orch-Search-Resp-Timeout"
 const jobOrchSearchTimeoutDefault = 1 * time.Second
 const jobOrchSearchRespTimeoutDefault = 500 * time.Millisecond
 
+var jobStreams = make(map[string]*RelayServer)
+
 var errNoTimeoutSet = errors.New("no timeout_seconds set with request, timeout_seconds is required")
 
 type JobSender struct {
@@ -69,6 +71,13 @@ type JobRequest struct {
 
 	orchSearchTimeout     time.Duration
 	orchSearchRespTimeout time.Duration
+}
+
+type JobRequestDetails struct {
+	StartStream       bool   `json:"start_stream,omitempty"`
+	StartStreamOutput bool   `json:"start_stream_output,omitempty"`
+	UpdateStream      bool   `json:"update_stream,omitempty"`
+	StreamID          string `json:"stream_id,omitempty"`
 }
 
 // worker registers to Orchestrator
@@ -269,6 +278,75 @@ func (ls *LivepeerServer) SubmitJob() http.Handler {
 	})
 }
 
+func (h *lphttp) ProcessWorkerWHIP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	streamID := r.Header.Get("X-Stream-Id")
+	stream, ok := h.node.ExternalCapabilities.Streams[streamID]
+	if !ok {
+		clog.Errorf(ctx, "Stream %s not found", streamID)
+		http.Error(w, fmt.Sprintf("Stream %s not found", streamID), http.StatusNotFound)
+		return
+	}
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		clog.Errorf(ctx, "Error reading request body: %v", err)
+		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		return
+	}
+	//create WHIP session for results from worker
+	workerResultStreamCtx, cancel := context.WithCancel(context.Background())
+	relay, addWhep := NewRelayServer(workerResultStreamCtx)
+	stream.WorkerStreamCtx = workerResultStreamCtx
+	stream.WorkerCancelStream = cancel
+	stream.WorkerAddStreamWhep = addWhep
+
+	_, whipAnswer, status_code, err := relay.createWHIPSession(body, r.Header.Get("Content-Type"), streamID)
+
+	if err != nil {
+		clog.Errorf(ctx, "Error creating WHIP session err=%v", err)
+		http.Error(w, fmt.Sprintf("Error creating WHIP session err=%v", err), status_code)
+		return
+	}
+	// Store session information
+	go relay.Start()
+
+	clog.Infof(ctx, "Worker WHIP session created for stream %s", streamID)
+	// Set response headers
+	w.Header().Set("Content-Type", "application/sdp")
+	w.Header().Set("Location", fmt.Sprintf("/process/worker/whip/%s", streamID))
+	w.WriteHeader(http.StatusCreated)
+
+	// Send SDP answer
+	w.Write([]byte(whipAnswer))
+}
+
+func (h *lphttp) ProcessWorkerWHEP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	streamID := r.Header.Get("X-Stream-Id")
+	stream, ok := h.node.ExternalCapabilities.Streams[streamID]
+	if !ok {
+		clog.Errorf(ctx, "Stream %s not found", streamID)
+		http.Error(w, fmt.Sprintf("Stream %s not found", streamID), http.StatusNotFound)
+		return
+	}
+	// Create WHEP session for results from worker
+
+	// Gateway node
+	ls.submitJob(ctx, w, r)
+}
+
 func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	jobReqHdr := r.Header.Get(jobRequestHdr)
 	jobReq, err := verifyJobCreds(ctx, nil, jobReqHdr)
@@ -281,24 +359,6 @@ func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, 
 	ctx = clog.AddVal(ctx, "capability", jobReq.Capability)
 	clog.Infof(ctx, "processing job request")
 
-	searchTimeout, respTimeout := getOrchSearchTimeouts(ctx, r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr))
-	jobReq.orchSearchTimeout = searchTimeout
-	jobReq.orchSearchRespTimeout = respTimeout
-
-	//get pool of Orchestrators that can do the job
-	orchs, err := getJobOrchestrators(ctx, ls.LivepeerNode, jobReq.Capability, jobReq.orchSearchTimeout, jobReq.orchSearchRespTimeout)
-	if err != nil {
-		clog.Errorf(ctx, "Unable to find orchestrators for capability %v err=%v", jobReq.Capability, err)
-		http.Error(w, fmt.Sprintf("Unable to find orchestrators for capability %v err=%v", jobReq.Capability, err), http.StatusBadRequest)
-		return
-	}
-
-	if len(orchs) == 0 {
-		clog.Errorf(ctx, "No orchestrators found for capability %v", jobReq.Capability)
-		http.Error(w, fmt.Sprintf("No orchestrators found for capability %v", jobReq.Capability), http.StatusServiceUnavailable)
-		return
-	}
-
 	// Read the original request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -306,6 +366,29 @@ func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	r.Body.Close()
+
+	//pre-process the request
+	//get the job request details
+	var jobReqDetails JobRequestDetails
+	if err := json.Unmarshal([]byte(jobReq.Request), &jobReqDetails); err != nil {
+		clog.Errorf(ctx, "Unable to unmarshal job request details err=%v", err)
+		http.Error(w, fmt.Sprintf("Unable to unmarshal job request details err=%v", err), http.StatusBadRequest)
+		return
+	}
+
+	if jobReqDetails.StartStream {
+		//include random suffix to streamID to avoid conflicts
+		jobReqDetails.StreamID = fmt.Sprintf("%s-%s", jobReqDetails.StreamID, string(core.RandomManifestID()))
+
+		// Register the stream in the external capabilities
+		ls.LivepeerNode.ExternalCapabilities.Streams[jobReqDetails.StreamID] = &core.StreamData{
+			StreamID: jobReqDetails.StreamID,
+		}
+	}
+
+	newReqDetails, _ := json.Marshal(jobReqDetails)
+	jobReq.Request = string(newReqDetails)
+
 	//sign the request
 	gateway := ls.LivepeerNode.OrchestratorPool.Broadcaster()
 	sig, err := gateway.Sign([]byte(jobReq.Request + jobReq.Parameters))
@@ -326,24 +409,49 @@ func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, 
 	}
 	jobReqHdr = base64.StdEncoding.EncodeToString(jobReqEncoded)
 
+	searchTimeout, respTimeout := getOrchSearchTimeouts(ctx, r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr))
+	jobReq.orchSearchTimeout = searchTimeout
+	jobReq.orchSearchRespTimeout = respTimeout
+
+	//get pool of Orchestrators that can do the job
+	var orchs []JobToken
+	if jobReqDetails.StartStreamOutput {
+		orchStream, ok := ls.LivepeerNode.ExternalCapabilities.Streams[jobReqDetails.StreamID]
+		if ok {
+			orchs = append(orchs, orchStream.OrchToken.(JobToken))
+		} else {
+			clog.Errorf(ctx, "Stream not found %v", jobReqDetails.StreamID)
+			http.Error(w, fmt.Sprintf("Stream not found %v", jobReqDetails.StreamID), http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		orchs, err = getJobOrchestrators(ctx, ls.LivepeerNode, jobReq.Capability, jobReq.orchSearchTimeout, jobReq.orchSearchRespTimeout)
+		if err != nil {
+			clog.Errorf(ctx, "Unable to find orchestrators for capability %v err=%v", jobReq.Capability, err)
+			http.Error(w, fmt.Sprintf("Unable to find orchestrators for capability %v err=%v", jobReq.Capability, err), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if len(orchs) == 0 {
+		clog.Errorf(ctx, "No orchestrators found for capability %v", jobReq.Capability)
+		http.Error(w, fmt.Sprintf("No orchestrators found for capability %v", jobReq.Capability), http.StatusServiceUnavailable)
+		return
+	}
+
 	//send the request to the Orchestrator(s)
 	//the loop ends on Gateway error and bad request errors
 	for _, orchToken := range orchs {
-
-		// Extract the worker resource route from the URL path
-		// The prefix is "/process/request/"
-		// if the request does not include the last / of the prefix no additional url path is added
-		workerRoute := orchToken.ServiceAddr + "/process/request"
-		prefix := "/process/request/"
-		workerResourceRoute := r.URL.Path
-		if strings.HasPrefix(workerResourceRoute, prefix) {
-			workerResourceRoute = workerResourceRoute[len(prefix):]
-		}
-		if workerResourceRoute != "" {
-			workerRoute = workerRoute + "/" + workerResourceRoute
+		if jobReqDetails.StartStream {
+			sd := ls.LivepeerNode.ExternalCapabilities.Streams[jobReqDetails.StreamID]
+			sd.CurrentOrchUrl = orchToken.ServiceAddr
+			sd.OrchToken = orchToken
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", workerRoute, bytes.NewBuffer(body))
+		// Pass through the url path to the Orchestrator
+		orchRoute := orchToken.ServiceAddr + r.URL.Path
+
+		req, err := http.NewRequestWithContext(ctx, "POST", orchRoute, bytes.NewBuffer(body))
 		if err != nil {
 			clog.Errorf(ctx, "Unable to create request err=%v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -568,7 +676,37 @@ func processJob(ctx context.Context, h *lphttp, w http.ResponseWriter, r *http.R
 		return
 	}
 	r.Body.Close()
+	var jobReqDetails JobRequestDetails
+	if err := json.Unmarshal([]byte(jobReq.Request), &jobReqDetails); err != nil {
+		clog.Errorf(ctx, "Unable to unmarshal job request details err=%v", err)
+		http.Error(w, fmt.Sprintf("Unable to unmarshal job request details err=%v", err), http.StatusBadRequest)
+		return
+	}
 
+	//setup stream if starting
+	answer := ""
+	if jobReqDetails.StartStream {
+		clog.Infof(ctx, "starting stream with id %v", jobReqDetails.StreamID)
+
+		streamCtx, cancel := context.WithCancel(context.Background())
+		relay, addWhep := NewRelayServer(streamCtx)
+		_, whipAnswer, status_code, err := relay.createWHIPSession(body, r.Header.Get("Content-Type"), jobReqDetails.StreamID, "")
+
+		if err != nil {
+			clog.Errorf(ctx, "Error creating WHIP session err=%v", err)
+			http.Error(w, fmt.Sprintf("Error creating WHIP session err=%v", err), status_code)
+			return
+		}
+		// Store session information
+		answer = whipAnswer
+		h.node.ExternalCapabilities.Streams[jobReqDetails.StreamID] = &core.StreamData{
+			StreamID:     jobReqDetails.StreamID,
+			StreamCtx:    streamCtx,
+			CancelStream: cancel,
+			Sender:       sender,
+		}
+
+	}
 	// Extract the worker resource route from the URL path
 	// The prefix is "/process/request/"
 	// if the request does not include the last / of the prefix no additional url path is added
@@ -597,7 +735,7 @@ func processJob(ctx context.Context, h *lphttp, w http.ResponseWriter, r *http.R
 	if err != nil {
 		clog.Errorf(ctx, "job not able to be processed err=%v ", err.Error())
 		//if the request failed with an error, remove the capability
-		if err != context.DeadlineExceeded && err != context.Canceled {
+		if err != context.DeadlineExceeded && !strings.Contains(err.Error(), "context canceled") {
 			clog.Errorf(ctx, "removing capability %v due to error %v", jobReq.Capability, err.Error())
 			h.orchestrator.RemoveExternalCapability(jobReq.Capability)
 		}

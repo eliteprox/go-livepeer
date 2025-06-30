@@ -1,12 +1,14 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
 
 	"sync"
 
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/golang/glog"
 )
 
@@ -28,10 +30,33 @@ type ExternalCapability struct {
 type ExternalCapabilities struct {
 	capm         sync.Mutex
 	Capabilities map[string]*ExternalCapability
+	Streams      map[string]*StreamData
+}
+
+type StreamData struct {
+	StreamID   string
+	Capability string
+	//Gateway fields
+	CurrentOrchUrl string
+	OrchUrls       []string
+	ExcludeOrchs   []string
+	OrchToken      interface{}
+
+	//Orchestrator fields
+	StreamCtx           context.Context
+	CancelStream        context.CancelFunc
+	AddStreamWhep       interface{}
+	WorkerStreamCtx     context.Context
+	WorkerCancelStream  context.CancelFunc
+	WorkerAddStreamWhep interface{}
+	Sender              ethcommon.Address
 }
 
 func NewExternalCapabilities() *ExternalCapabilities {
-	return &ExternalCapabilities{Capabilities: make(map[string]*ExternalCapability)}
+	return &ExternalCapabilities{
+		Capabilities: make(map[string]*ExternalCapability),
+		Streams:      make(map[string]*StreamData),
+	}
 }
 
 func (extCaps *ExternalCapabilities) RemoveCapability(extCap string) {
