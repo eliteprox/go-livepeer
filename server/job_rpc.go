@@ -550,10 +550,17 @@ func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, 
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance)
 
 			// set WHIP/WHEP response headers if applicable
+			respCode := http.StatusOK
 			if jobReqDetails.StartStreamOutput || jobReqDetails.UpdateStream || jobReqDetails.StartStream || jobReqDetails.StopStream {
 				w.Header().Set("Content-Type", "application/sdp")
 				w.Header().Set("Location", fmt.Sprintf("/process/request/whip/%s", jobReqDetails.StreamID))
+				if jobReqDetails.StartStream {
+					w.Header().Set("X-Stream-Id", resp.Header.Get("X-Stream-Id"))
+				}
+				respCode = http.StatusCreated
 			}
+
+			w.WriteHeader(respCode)
 			w.Write(data)
 			return
 		} else {
@@ -853,16 +860,20 @@ func processJob(ctx context.Context, h *lphttp, w http.ResponseWriter, r *http.R
 		w.Header().Set(jobPaymentBalanceHdr, getPaymentBalance(orch, sender, jobId).FloatString(0))
 		clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v", time.Since(start), getPaymentBalance(orch, sender, jobId).FloatString(0))
 
+		respCode := http.StatusOK
 		if jobReqDetails.StartStreamOutput || jobReqDetails.UpdateStream || jobReqDetails.StartStream || jobReqDetails.StopStream {
 			w.Header().Set("Content-Type", "application/sdp")
 			w.Header().Set("Location", fmt.Sprintf("/process/request/whip/%s", jobReqDetails.StreamID))
-			w.Write([]byte(answer))
-			return
+			if jobReqDetails.StartStream {
+				w.Header().Set("X-Stream-Id", jobReqDetails.StreamID)
+			}
+			respCode = http.StatusCreated
+			data = []byte(answer) //answer is the SDP answer for the WHIP session
 		}
 
-		w.Write(data)
 		//request completed and returned a response
-
+		w.WriteHeader(respCode)
+		w.Write(data)
 		return
 	} else {
 		// Handle streaming response (SSE)
