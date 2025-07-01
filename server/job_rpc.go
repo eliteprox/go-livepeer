@@ -404,6 +404,12 @@ func (ls *LivepeerServer) submitJob(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 
+	// Handle WHIP/WHEP capabilities with proper SDP exchange
+	if jobReq.Capability == "whip-ingest" || jobReq.Capability == "whep-subscribe" {
+		ls.handleWHIPWHEPRequest(ctx, w, r, jobReq, jobReqDetails, body)
+		return
+	}
+
 	if jobReqDetails.StartStream {
 		//include random suffix to streamID to avoid conflicts
 		jobReqDetails.StreamID = fmt.Sprintf("%s-%s", jobReqDetails.StreamID, string(core.RandomManifestID()))
@@ -1308,4 +1314,167 @@ func getJobOrchestrators(ctx context.Context, node *core.LivepeerNode, capabilit
 	cancel()
 
 	return jobTokens, nil
+}
+
+// Handle WHIP/WHEP requests with proper SDP exchange
+func (ls *LivepeerServer) handleWHIPWHEPRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, jobReq *JobRequest, jobReqDetails JobRequestDetails, body []byte) {
+	// Create stream ID for this session
+	streamID := fmt.Sprintf("%s-%s", jobReq.ID, string(core.RandomManifestID()))
+
+	// Prepare request data for ComfyStream BYOC endpoint
+	var requestData map[string]interface{}
+	if err := json.Unmarshal(body, &requestData); err != nil {
+		// If body is raw SDP, wrap it
+		if r.Header.Get("Content-Type") == "application/sdp" {
+			requestData = map[string]interface{}{
+				"sdp_offer": string(body),
+			}
+		} else {
+			clog.Errorf(ctx, "Unable to parse request body err=%v", err)
+			http.Error(w, fmt.Sprintf("Unable to parse request body err=%v", err), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Add stream ID to request
+	requestData["stream_id"] = streamID
+
+	searchTimeout, respTimeout := getOrchSearchTimeouts(ctx, r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr))
+	jobReq.orchSearchTimeout = searchTimeout
+	jobReq.orchSearchRespTimeout = respTimeout
+
+	//get pool of Orchestrators that can do the job
+	orchs, err := getJobOrchestrators(ctx, ls.LivepeerNode, jobReq.Capability, jobReq.orchSearchTimeout, jobReq.orchSearchRespTimeout)
+	if err != nil {
+		clog.Errorf(ctx, "Unable to find orchestrators for capability %v err=%v", jobReq.Capability, err)
+		http.Error(w, fmt.Sprintf("Unable to find orchestrators for capability %v err=%v", jobReq.Capability, err), http.StatusBadRequest)
+		return
+	}
+
+	if len(orchs) == 0 {
+		clog.Errorf(ctx, "No orchestrators found for capability %v", jobReq.Capability)
+		http.Error(w, fmt.Sprintf("No orchestrators found for capability %v", jobReq.Capability), http.StatusServiceUnavailable)
+		return
+	}
+
+	// Try each orchestrator
+	for _, orchToken := range orchs {
+		success := ls.tryOrchestrator(ctx, w, r, jobReq, orchToken, requestData, streamID)
+		if success {
+			return
+		}
+	}
+
+	// If we get here, all orchestrators failed
+	http.Error(w, "All orchestrators failed to process WHIP/WHEP request", http.StatusServiceUnavailable)
+}
+
+// Try processing with a specific orchestrator
+func (ls *LivepeerServer) tryOrchestrator(ctx context.Context, w http.ResponseWriter, r *http.Request, jobReq *JobRequest, orchToken JobToken, requestData map[string]interface{}, streamID string) bool {
+	// Prepare request to orchestrator
+	orchRoute := orchToken.ServiceAddr + r.URL.Path
+
+	// Convert request data back to JSON
+	reqBody, err := json.Marshal(requestData)
+	if err != nil {
+		clog.Errorf(ctx, "Unable to marshal request data err=%v", err)
+		return false
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", orchRoute, bytes.NewBuffer(reqBody))
+	if err != nil {
+		clog.Errorf(ctx, "Unable to create request err=%v", err)
+		return false
+	}
+
+	// Set headers
+	req.Header.Add("Content-Type", "application/json")
+
+	// Create job request header
+	jobReqEncoded, err := json.Marshal(jobReq)
+	if err != nil {
+		clog.Errorf(ctx, "Unable to encode job request err=%v", err)
+		return false
+	}
+	req.Header.Add(jobRequestHdr, base64.StdEncoding.EncodeToString(jobReqEncoded))
+
+	// Add payment header if needed
+	if orchToken.Price.PricePerUnit > 0 {
+		paymentHdr, err := createPayment(ctx, jobReq, orchToken, ls.LivepeerNode)
+		if err != nil {
+			clog.Errorf(ctx, "Unable to create payment err=%v", err)
+			return false
+		}
+		req.Header.Add(jobPaymentHeaderHdr, paymentHdr)
+	}
+
+	start := time.Now()
+	resp, err := sendReqWithTimeout(req, time.Duration(jobReq.Timeout+5)*time.Second)
+	if err != nil {
+		clog.Errorf(ctx, "job not able to be processed by Orchestrator %v err=%v", orchToken.ServiceAddr, err.Error())
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode > 399 {
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			clog.Errorf(ctx, "Unable to read error response err=%v", err)
+			return false
+		}
+		clog.Errorf(ctx, "error processing request err=%v", string(data))
+		return false
+	}
+
+	// Read response
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		clog.Errorf(ctx, "Unable to read response err=%v", err)
+		return false
+	}
+
+	// Parse JSON response to extract SDP answer
+	var responseData map[string]interface{}
+	if err := json.Unmarshal(data, &responseData); err != nil {
+		clog.Errorf(ctx, "Unable to parse response JSON err=%v", err)
+		return false
+	}
+
+	// Extract result and SDP answer
+	result, ok := responseData["result"].(map[string]interface{})
+	if !ok {
+		clog.Errorf(ctx, "Invalid response format, missing result")
+		return false
+	}
+
+	sdpAnswer, ok := result["sdp_answer"].(string)
+	if !ok {
+		clog.Errorf(ctx, "Invalid response format, missing SDP answer")
+		return false
+	}
+
+	// Store stream data for future requests
+	if jobReq.Capability == "whip-ingest" {
+		ls.LivepeerNode.ExternalCapabilities.Streams[streamID] = &core.StreamData{
+			StreamID:       streamID,
+			CurrentOrchUrl: orchToken.ServiceAddr,
+			OrchToken:      orchToken,
+		}
+	}
+
+	// Set appropriate response headers for WHIP/WHEP
+	w.Header().Set("Content-Type", "application/sdp")
+	w.Header().Set("Location", fmt.Sprintf("/whip/%s", streamID))
+	if orchBalance := resp.Header.Get(jobPaymentBalanceHdr); orchBalance != "" {
+		w.Header().Set(jobPaymentBalanceHdr, orchBalance)
+	}
+	w.WriteHeader(http.StatusCreated)
+
+	// Send SDP answer back to client
+	w.Write([]byte(sdpAnswer))
+
+	gatewayBalance := updateGatewayBalance(ls.LivepeerNode, orchToken, jobReq.Capability, time.Since(start))
+	clog.V(common.SHORT).Infof(ctx, "WHIP/WHEP job processed successfully took=%v balance=%v", time.Since(start), gatewayBalance.FloatString(0))
+
+	return true
 }

@@ -586,9 +586,9 @@ func (rs *RelayServer) cleanupStaleSessions() {
 	}
 
 	// Cleanup stale WHEP sessions
-	for id, session := range rs.egress {
+	for _, session := range rs.egress {
 		if session.LastUpdate.Before(cutoff) {
-			log.Printf("Cleaning up stale WHEP session: %s", id)
+			log.Printf("Cleaning up stale WHEP session: %s", session.ID)
 			if session.PeerConn != nil {
 				session.PeerConn.Close()
 			}
