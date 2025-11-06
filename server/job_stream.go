@@ -1358,13 +1358,31 @@ func (h *lphttp) StopStream(w http.ResponseWriter, r *http.Request) {
 	resp, err := sendReqWithTimeout(req, time.Duration(orchJob.Req.Timeout)*time.Second)
 	if err != nil {
 		clog.Errorf(ctx, "Error sending request to worker %v: %v", workerRoute, err)
+		// Stop the stream and free capacity even if worker request failed
+		h.node.ExternalCapabilities.RemoveStream(jobDetails.StreamId)
+		http.Error(w, "Failed to communicate with worker", http.StatusInternalServerError)
+		return
 	}
+
+	// Ensure resp is not nil before accessing its fields
+	if resp == nil {
+		clog.Errorf(ctx, "Received nil response from worker %v", workerRoute)
+		// Stop the stream and free capacity
+		h.node.ExternalCapabilities.RemoveStream(jobDetails.StreamId)
+		http.Error(w, "Invalid response from worker", http.StatusInternalServerError)
+		return
+	}
+
+	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		clog.Errorf(ctx, "Error reading response body: %v", err)
+		// Stop the stream and free capacity
+		h.node.ExternalCapabilities.RemoveStream(jobDetails.StreamId)
+		http.Error(w, "Error reading worker response", http.StatusInternalServerError)
+		return
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode > 399 {
 		clog.Errorf(ctx, "error processing stream stop request statusCode=%d", resp.StatusCode)
