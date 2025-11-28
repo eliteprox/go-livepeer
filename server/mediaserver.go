@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/livepeer/go-livepeer/byoc"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/monitor"
 	"github.com/livepeer/go-livepeer/pm"
@@ -130,6 +131,8 @@ type LivepeerServer struct {
 	liveAIAuthApiKey    string
 	livePaymentInterval time.Duration
 	outSegmentTimeout   time.Duration
+
+	byocSrv *byoc.BYOCGatewayServer
 }
 
 func (s *LivepeerServer) SetContextFromUnitTest(c context.Context) {
@@ -211,6 +214,9 @@ func NewLivepeerServer(ctx context.Context, rtmpAddr string, lpNode *core.Livepe
 		}
 	}
 	opts.HttpMux.HandleFunc("/recordings/", ls.HandleRecordings)
+
+	ls.byocSrv = byoc.NewBYOCGatewayServer(lpNode, &StreamStatusStore, &SlowOrchChecker{}, ls.HTTPMux)
+
 	return ls, nil
 }
 

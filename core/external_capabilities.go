@@ -9,6 +9,7 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/net"
 	"github.com/livepeer/go-livepeer/trickle"
@@ -23,6 +24,20 @@ type JobToken struct {
 
 	LastNonce uint32
 }
+
+func (jt JobToken) Address() string {
+	if jt.TicketParams != nil {
+		if jt.TicketParams.Recipient != nil {
+			return hexutil.Encode(jt.TicketParams.Recipient)
+		}
+	}
+	return ""
+}
+
+func (jt JobToken) URL() string {
+	return jt.ServiceAddr
+}
+
 type JobSender struct {
 	Addr string `json:"addr"`
 	Sig  string `json:"sig"`

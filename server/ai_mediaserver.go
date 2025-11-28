@@ -21,6 +21,7 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/livepeer/go-livepeer/ai/worker"
+	"github.com/livepeer/go-livepeer/byoc"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
@@ -122,16 +123,8 @@ func startAIMediaServer(ctx context.Context, ls *LivepeerServer) error {
 	//API for dynamic capabilities
 	ls.HTTPMux.Handle("/process/request/", ls.SubmitJob())
 
-	ls.HTTPMux.Handle("OPTIONS /ai/stream/", ls.WithCode(http.StatusNoContent))
-	ls.HTTPMux.Handle("POST /ai/stream/start", ls.StartStream())
-	ls.HTTPMux.Handle("POST /ai/stream/{streamId}/stop", ls.StopStream())
-	if os.Getenv("LIVE_AI_WHIP_ADDR") != "" {
-		ls.HTTPMux.Handle("POST /ai/stream/{streamId}/whip", ls.StartStreamWhipIngest(whipServer))
-	}
-	ls.HTTPMux.Handle("POST /ai/stream/{streamId}/rtmp", ls.StartStreamRTMPIngest())
-	ls.HTTPMux.Handle("POST /ai/stream/{streamId}/update", ls.UpdateStream())
-	ls.HTTPMux.Handle("GET /ai/stream/{streamId}/status", ls.GetStreamStatus())
-	ls.HTTPMux.Handle("GET /ai/stream/{streamId}/data", ls.GetStreamData())
+	// Register AI streaming routes for BYOC package
+	ls.byocServer = byoc.NewBYOCGatewayServer(ls.LivepeerNode, &StreamStatusStore, &SlowOrchChecker{}, ls.HTTPMux)
 
 	media.StartFileCleanup(ctx, ls.LivepeerNode.WorkDir)
 

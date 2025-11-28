@@ -30,6 +30,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/ai/worker"
 	"github.com/livepeer/go-livepeer/build"
+	"github.com/livepeer/go-livepeer/byoc"
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
 	"github.com/livepeer/go-livepeer/discovery"
@@ -1548,6 +1549,7 @@ func StartLivepeer(ctx context.Context, cfg LivepeerConfig) {
 		}
 		glog.Info("Using live AI auth webhook URL ", parsedUrl.Redacted())
 		server.LiveAIAuthWebhookURL = parsedUrl
+		byoc.LiveAIAuthWebhookURL = parsedUrl
 	}
 
 	httpIngest := true
