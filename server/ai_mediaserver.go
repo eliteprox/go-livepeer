@@ -21,7 +21,6 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/livepeer/go-livepeer/ai/worker"
-	"github.com/livepeer/go-livepeer/byoc"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
@@ -119,12 +118,6 @@ func startAIMediaServer(ctx context.Context, ls *LivepeerServer) error {
 	// Stream status
 	ls.HTTPMux.Handle("OPTIONS /live/video-to-video/{streamId}/status", ls.WithCode(http.StatusNoContent))
 	ls.HTTPMux.Handle("/live/video-to-video/{streamId}/status", ls.GetLiveVideoToVideoStatus())
-
-	//API for dynamic capabilities
-	ls.HTTPMux.Handle("/process/request/", ls.SubmitJob())
-
-	// Register AI streaming routes for BYOC package
-	ls.byocServer = byoc.NewBYOCGatewayServer(ls.LivepeerNode, &StreamStatusStore, &SlowOrchChecker{}, ls.HTTPMux)
 
 	media.StartFileCleanup(ctx, ls.LivepeerNode.WorkDir)
 

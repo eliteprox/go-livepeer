@@ -215,8 +215,6 @@ func NewLivepeerServer(ctx context.Context, rtmpAddr string, lpNode *core.Livepe
 	}
 	opts.HttpMux.HandleFunc("/recordings/", ls.HandleRecordings)
 
-	ls.byocSrv = byoc.NewBYOCGatewayServer(lpNode, &StreamStatusStore, &SlowOrchChecker{}, ls.HTTPMux)
-
 	return ls, nil
 }
 
