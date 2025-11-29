@@ -511,8 +511,6 @@ func (bsg *BYOCGatewayServer) startControlPublish(ctx context.Context, control *
 	}
 
 	bsg.mu.Lock()
-	defer bsg.mu.Unlock()
-
 	if stream.ControlPub != nil {
 		// clean up from existing orchestrator
 		go stream.ControlPub.Close()
@@ -520,6 +518,7 @@ func (bsg *BYOCGatewayServer) startControlPublish(ctx context.Context, control *
 	stream.ControlPub = controlPub
 	stream.StopControl = stop
 	stream.ReportUpdate = reportUpdate
+	bsg.mu.Unlock()
 
 	if monitor.Enabled {
 		bsg.monitorCurrentLiveSessions()
@@ -527,6 +526,7 @@ func (bsg *BYOCGatewayServer) startControlPublish(ctx context.Context, control *
 
 	// Send any cached control params in a goroutine outside the lock.
 	msg := stream.Params
+
 	go func() {
 		if msg == nil {
 			return
