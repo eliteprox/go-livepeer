@@ -1,4 +1,4 @@
-package server
+package byoc
 
 import (
 	"bytes"
@@ -47,6 +47,7 @@ type mockJobOrchestrator struct {
 	caps                 *core.Capabilities
 	authToken            *net.AuthToken
 	externalCapabilities map[string]*core.ExternalCapability
+	extraNodes           int
 
 	registerExternalCapability      func(string) (*core.ExternalCapability, error)
 	unregisterExternalCapability    func(string) error
@@ -60,6 +61,8 @@ type mockJobOrchestrator struct {
 	freeCapacity                    func(string) error
 	jobPriceInfo                    func(ethcommon.Address, string) (*net.PriceInfo, error)
 	ticketParams                    func(ethcommon.Address, *net.PriceInfo) (*net.TicketParams, error)
+
+	mock.Mock
 }
 
 func (r *mockJobOrchestrator) ServiceURI() *url.URL {
@@ -101,7 +104,9 @@ func (r *mockJobOrchestrator) Sign(msg []byte) ([]byte, error) {
 func (r *mockJobOrchestrator) VerifySig(addr ethcommon.Address, msg string, sig []byte) bool {
 	return r.verifySignature(addr, msg, sig)
 }
-
+func (r *mockJobOrchestrator) ExtraNodes() int {
+	return r.extraNodes
+}
 func (r *mockJobOrchestrator) Address() ethcommon.Address {
 	if r.offchain {
 		return ethcommon.Address{}
@@ -283,7 +288,7 @@ func newMockJobOrchestrator() *mockJobOrchestrator {
 	node.OrchSecret = "verbigsecret"
 	mockOrch.node = node
 
-	return &mockJobOrchestrator{priv: pk, block: big.NewInt(5)}
+	return mockOrch
 }
 
 // stubJobOrchestratorPool is a stub implementation of the OrchestratorPool interface
@@ -343,8 +348,9 @@ func (s *stubJobOrchestratorPool) SizeWith(scorePred common.ScorePred) int {
 	}
 	return count
 }
+
 func (s *stubJobOrchestratorPool) Broadcaster() common.Broadcaster {
-	return stubBroadcaster2()
+	return newMockJobOrchestrator()
 }
 
 func mockJobLivepeerNode() *core.LivepeerNode {
@@ -357,31 +363,32 @@ func mockJobLivepeerNode() *core.LivepeerNode {
 
 // Tests for RegisterCapability
 func TestRegisterCapability_MethodNotAllowed(t *testing.T) {
-	h := &lphttp{
-		orchestrator: &mockOrchestrator{},
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
 	}
-
-	req := httptest.NewRequest("GET", "/capability", nil)
+	req := httptest.NewRequest("GET", "/capability/register", nil)
 	w := httptest.NewRecorder()
 
-	h.RegisterCapability(w, req)
+	handler := bso.RegisterCapability()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
 }
 
 func TestRegisterCapability_InvalidAuthorization(t *testing.T) {
-
-	h := &lphttp{
-		orchestrator: newMockJobOrchestrator(),
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: newMockJobOrchestrator(),
 	}
-	h.orchestrator.TranscoderSecret()
+	bso.orch.TranscoderSecret()
 
-	req := httptest.NewRequest("POST", "/capability", nil)
+	req := httptest.NewRequest("POST", "/capability/register", nil)
 	req.Header.Set("Authorization", "invalid-secret")
 	w := httptest.NewRecorder()
 
-	h.RegisterCapability(w, req)
+	handler := bso.RegisterCapability()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -398,15 +405,16 @@ func TestRegisterCapability_Success(t *testing.T) {
 		}, nil
 	}
 
-	h := &lphttp{
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		orch: mockJobOrch,
 	}
 
 	req := httptest.NewRequest("POST", "/capability/register", bytes.NewBufferString("test settings"))
 	req.Header.Set("Authorization", mockJobOrch.TranscoderSecret())
 	w := httptest.NewRecorder()
 
-	h.RegisterCapability(w, req)
+	handler := bso.RegisterCapability()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -418,15 +426,16 @@ func TestRegisterCapability_Error(t *testing.T) {
 		return nil, errors.New("registration failed")
 	}
 
-	h := &lphttp{
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		orch: mockJobOrch,
 	}
 
 	req := httptest.NewRequest("POST", "/capability/register", bytes.NewBufferString("test settings"))
 	req.Header.Set("Authorization", mockJobOrch.TranscoderSecret())
 	w := httptest.NewRecorder()
 
-	h.RegisterCapability(w, req)
+	handler := bso.RegisterCapability()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -442,7 +451,9 @@ func TestUnregisterCapability(t *testing.T) {
 	mockOrch.externalCapabilities[capName] = &core.ExternalCapability{Name: capName}
 
 	// Create handler with our mock orchestrator
-	handler := &lphttp{orchestrator: mockOrch}
+	bso := &BYOCOrchestratorServer{
+		orch: mockOrch,
+	}
 
 	t.Run("SuccessfulUnregister", func(t *testing.T) {
 
@@ -453,7 +464,8 @@ func TestUnregisterCapability(t *testing.T) {
 
 		// Execute request
 		recorder := httptest.NewRecorder()
-		handler.UnregisterCapability(recorder, req)
+		handler := bso.UnregisterCapability()
+		handler.ServeHTTP(recorder, req)
 
 		// Verify results
 		resp := recorder.Result()
@@ -471,7 +483,8 @@ func TestUnregisterCapability(t *testing.T) {
 		req.Header.Set("Authorization", secret)
 
 		recorder := httptest.NewRecorder()
-		handler.UnregisterCapability(recorder, req)
+		handler := bso.UnregisterCapability()
+		handler.ServeHTTP(recorder, req)
 
 		assert.Equal(t, http.StatusMethodNotAllowed, recorder.Result().StatusCode)
 	})
@@ -482,7 +495,8 @@ func TestUnregisterCapability(t *testing.T) {
 		req.Header.Set("Authorization", "wrong-secret")
 
 		recorder := httptest.NewRecorder()
-		handler.UnregisterCapability(recorder, req)
+		handler := bso.UnregisterCapability()
+		handler.ServeHTTP(recorder, req)
 
 		assert.Equal(t, http.StatusBadRequest, recorder.Result().StatusCode)
 	})
@@ -492,7 +506,8 @@ func TestUnregisterCapability(t *testing.T) {
 			bytes.NewBufferString(capName))
 
 		recorder := httptest.NewRecorder()
-		handler.UnregisterCapability(recorder, req)
+		handler := bso.UnregisterCapability()
+		handler.ServeHTTP(recorder, req)
 
 		assert.Equal(t, http.StatusBadRequest, recorder.Result().StatusCode)
 	})
@@ -508,7 +523,8 @@ func TestUnregisterCapability(t *testing.T) {
 		req.Header.Set("Authorization", secret)
 
 		recorder := httptest.NewRecorder()
-		handler.UnregisterCapability(recorder, req)
+		handler := bso.UnregisterCapability()
+		handler.ServeHTTP(recorder, req)
 
 		assert.Equal(t, http.StatusBadRequest, recorder.Result().StatusCode)
 
@@ -521,7 +537,8 @@ func TestUnregisterCapability(t *testing.T) {
 		req.Header.Set("Authorization", secret)
 
 		recorder := httptest.NewRecorder()
-		handler.UnregisterCapability(recorder, req)
+		handler := bso.UnregisterCapability()
+		handler.ServeHTTP(recorder, req)
 
 		// Should still work, but will attempt to remove an empty string capability
 		assert.Equal(t, http.StatusOK, recorder.Result().StatusCode)
@@ -530,45 +547,48 @@ func TestUnregisterCapability(t *testing.T) {
 
 // Tests for GetJobToken
 func TestGetJobToken_MethodNotAllowed(t *testing.T) {
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: &mockJobOrchestrator{},
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: &mockJobOrchestrator{},
 	}
 
-	req := httptest.NewRequest("POST", "/token", nil)
+	req := httptest.NewRequest("POST", "/process/token", nil)
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
 }
 
 func TestGetJobToken_NotOrchestrator(t *testing.T) {
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: &mockJobOrchestrator{},
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: &mockJobOrchestrator{},
 	}
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestGetJobToken_MissingEthAddressHeader(t *testing.T) {
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: &mockOrchestrator{},
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: &mockJobOrchestrator{},
 	}
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -581,9 +601,9 @@ func TestGetJobToken_InvalidEthAddressHeader(t *testing.T) {
 
 	mockJobOrch := newMockJobOrchestrator()
 	mockJobOrch.verifySignature = mockVerifySig
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: mockJobOrch,
 	}
 
 	// Create a valid JobSender structure
@@ -594,11 +614,12 @@ func TestGetJobToken_InvalidEthAddressHeader(t *testing.T) {
 	jsBytes, _ := json.Marshal(js)
 	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	req.Header.Set(jobEthAddressHdr, jsBase64)
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -610,9 +631,9 @@ func TestGetJobToken_MissingCapabilityHeader(t *testing.T) {
 	}
 	mockJobOrch := newMockJobOrchestrator()
 	mockJobOrch.verifySignature = mockVerifySig
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: mockJobOrch,
 	}
 
 	// Create a valid JobSender structure
@@ -623,11 +644,12 @@ func TestGetJobToken_MissingCapabilityHeader(t *testing.T) {
 	jsBytes, _ := json.Marshal(js)
 	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	req.Header.Set(jobEthAddressHdr, jsBase64)
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -650,13 +672,13 @@ func TestGetJobToken_NoCapacity(t *testing.T) {
 	mockJobOrch.checkExternalCapabilityCapacity = mockCheckExternalCapabilityCapacity
 	mockJobOrch.reserveCapacity = mockReserveCapacity
 
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: mockJobOrch,
 	}
 
 	// Create a valid JobSender structure
-	gateway := stubBroadcaster2()
+	gateway := newMockJobOrchestrator()
 	sig, _ := gateway.Sign([]byte(hexutil.Encode(gateway.Address().Bytes())))
 	js := &core.JobSender{
 		Addr: hexutil.Encode(gateway.Address().Bytes()),
@@ -665,12 +687,13 @@ func TestGetJobToken_NoCapacity(t *testing.T) {
 	jsBytes, _ := json.Marshal(js)
 	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	req.Header.Set(jobEthAddressHdr, jsBase64)
 	req.Header.Set(jobCapabilityHdr, "test-cap")
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
@@ -693,13 +716,13 @@ func TestGetJobToken_JobPriceInfoError(t *testing.T) {
 	mockJobOrch.verifySignature = mockVerifySig
 	mockJobOrch.reserveCapacity = mockReserveCapacity
 	mockJobOrch.jobPriceInfo = mockJobPriceInfo
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: mockJobOrch,
 	}
 
 	// Create a valid JobSender structure
-	gateway := stubBroadcaster2()
+	gateway := newMockJobOrchestrator()
 	sig, _ := gateway.Sign([]byte(hexutil.Encode(gateway.Address().Bytes())))
 	js := &core.JobSender{
 		Addr: hexutil.Encode(gateway.Address().Bytes()),
@@ -708,12 +731,13 @@ func TestGetJobToken_JobPriceInfoError(t *testing.T) {
 	jsBytes, _ := json.Marshal(js)
 	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	req.Header.Set(jobEthAddressHdr, jsBase64)
 	req.Header.Set(jobCapabilityHdr, "test-cap")
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -737,13 +761,13 @@ func TestGetJobToken_InsufficientReserve(t *testing.T) {
 	mockJobOrch.reserveCapacity = mockReserveCapacity
 	mockJobOrch.jobPriceInfo = mockJobPriceInfo
 
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: mockJobOrch,
 	}
 
 	// Create a valid JobSender structure
-	gateway := stubBroadcaster2()
+	gateway := newMockJobOrchestrator()
 	sig, _ := gateway.Sign([]byte(hexutil.Encode(gateway.Address().Bytes())))
 	js := &core.JobSender{
 		Addr: hexutil.Encode(gateway.Address().Bytes()),
@@ -752,12 +776,13 @@ func TestGetJobToken_InsufficientReserve(t *testing.T) {
 	jsBytes, _ := json.Marshal(js)
 	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	req.Header.Set(jobEthAddressHdr, jsBase64)
 	req.Header.Set(jobCapabilityHdr, "test-cap")
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
@@ -788,13 +813,13 @@ func TestGetJobToken_TicketParamsError(t *testing.T) {
 	mockJobOrch.jobPriceInfo = mockJobPriceInfo
 	mockJobOrch.ticketParams = mockTicketParams
 
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: mockJobOrch,
 	}
 
 	// Create a valid JobSender structure
-	gateway := stubBroadcaster2()
+	gateway := newMockJobOrchestrator()
 	sig, _ := gateway.Sign([]byte(hexutil.Encode(gateway.Address().Bytes())))
 	js := &core.JobSender{
 		Addr: hexutil.Encode(gateway.Address().Bytes()),
@@ -803,12 +828,13 @@ func TestGetJobToken_TicketParamsError(t *testing.T) {
 	jsBytes, _ := json.Marshal(js)
 	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/process/token", nil)
 	req.Header.Set(jobEthAddressHdr, jsBase64)
 	req.Header.Set(jobCapabilityHdr, "test-cap")
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -852,13 +878,13 @@ func TestGetJobToken_Success(t *testing.T) {
 	mockJobOrch.ticketParams = mockTicketParams
 	mockJobOrch.balance = mockBalance
 
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: mockJobOrch,
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: mockJobOrch,
 	}
 
 	// Create a valid JobSender structure
-	gateway := stubBroadcaster2()
+	gateway := newMockJobOrchestrator()
 	sig, _ := gateway.Sign([]byte(hexutil.Encode(gateway.Address().Bytes())))
 	js := &core.JobSender{
 		Addr: hexutil.Encode(gateway.Address().Bytes()),
@@ -867,12 +893,13 @@ func TestGetJobToken_Success(t *testing.T) {
 	jsBytes, _ := json.Marshal(js)
 	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
 
-	req := httptest.NewRequest("GET", "/token", nil)
+	req := httptest.NewRequest("GET", "/proces/token", nil)
 	req.Header.Set(jobEthAddressHdr, jsBase64)
 	req.Header.Set(jobCapabilityHdr, "test-cap")
 	w := httptest.NewRecorder()
 
-	h.GetJobToken(w, req)
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -887,15 +914,16 @@ func TestGetJobToken_Success(t *testing.T) {
 
 // Tests for ProcessJob
 func TestProcessJob_MethodNotAllowed(t *testing.T) {
-	h := &lphttp{
-		node:         mockJobLivepeerNode(),
-		orchestrator: &mockOrchestrator{},
+	bso := &BYOCOrchestratorServer{
+		node: mockJobLivepeerNode(),
+		orch: &mockJobOrchestrator{},
 	}
 
-	req := httptest.NewRequest("GET", "/process", nil)
+	req := httptest.NewRequest("GET", "/process/request/gg", nil)
 	w := httptest.NewRecorder()
 
-	h.ProcessJob(w, req)
+	handler := bso.ProcessJob()
+	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
@@ -903,15 +931,14 @@ func TestProcessJob_MethodNotAllowed(t *testing.T) {
 
 // Tests for SubmitJob handler
 func TestSubmitJob_MethodNotAllowed(t *testing.T) {
-	ls := &LivepeerServer{
-		LivepeerNode: mockJobLivepeerNode(),
+	bsg := &BYOCGatewayServer{
+		node: mockJobLivepeerNode(),
 	}
 
-	handler := ls.SubmitJob()
-
-	req := httptest.NewRequest("GET", "/submit", nil)
+	req := httptest.NewRequest("GET", "/process/request/gg", nil)
 	w := httptest.NewRecorder()
 
+	handler := bsg.SubmitJob()
 	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
@@ -1194,6 +1221,10 @@ func TestProcessPayment(t *testing.T) {
 			balanceCalled := 0
 			paymentCalled := 0
 			orch := newMockJobOrchestrator()
+			bso := &BYOCOrchestratorServer{node: orch.node, orch: orch}
+
+			orch.node.Balances = core.NewAddressBalances(1 * time.Second)
+			defer orch.node.Balances.StopCleanup()
 			orch.balance = func(addr ethcommon.Address, manifestID core.ManifestID) *big.Rat {
 				balanceCalled++
 				return new(big.Rat).Set(testBalance)
@@ -1211,7 +1242,7 @@ func TestProcessPayment(t *testing.T) {
 			}
 
 			before := orch.Balance(sender, core.ManifestID(tc.capability)).FloatString(0)
-			bal, err := processPayment(ctx, orch, sender, tc.capability, testPmtHdr)
+			bal, err := bso.processPayment(ctx, sender, tc.capability, testPmtHdr)
 			after := orch.Balance(sender, core.ManifestID(tc.capability)).FloatString(0)
 			t.Logf("Balance before: %s, after: %s", before, after)
 			assert.NoError(t, err)
@@ -1253,13 +1284,13 @@ func TestSetupGatewayJob(t *testing.T) {
 	node := mockJobLivepeerNode()
 
 	node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-	ls := &LivepeerServer{LivepeerNode: node}
+	bsg := &BYOCGatewayServer{node: node}
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set(jobRequestHdr, jobReqB64)
 
 	// Should succeed
-	gatewayJob, err := ls.setupGatewayJob(context.Background(), req, false)
+	gatewayJob, err := bsg.setupGatewayJob(context.Background(), req, false)
 	assert.NoError(t, err)
 	assert.NotNil(t, gatewayJob)
 	assert.Equal(t, "test-capability", gatewayJob.Job.Req.Capability)
@@ -1274,14 +1305,14 @@ func TestSetupGatewayJob(t *testing.T) {
 
 	// Should fail with invalid base64
 	req.Header.Set(jobRequestHdr, "not-base64")
-	gatewayJob, err = ls.setupGatewayJob(context.Background(), req, false)
+	gatewayJob, err = bsg.setupGatewayJob(context.Background(), req, false)
 	assert.Error(t, err)
 	assert.Nil(t, gatewayJob)
 
 	// Should fail with missing orchestrators (simulate getJobOrchestrators returns empty)
 	req.Header.Set(jobRequestHdr, jobReqB64)
-	ls.LivepeerNode.OrchestratorPool = newStubOrchestratorPool(node, []string{})
-	gatewayJob, err = ls.setupGatewayJob(context.Background(), req, false)
+	bsg.node.OrchestratorPool = newStubOrchestratorPool(node, []string{})
+	gatewayJob, err = bsg.setupGatewayJob(context.Background(), req, false)
 	assert.Error(t, err)
 	assert.Nil(t, gatewayJob)
 }

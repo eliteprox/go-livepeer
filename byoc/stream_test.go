@@ -1,4 +1,4 @@
-package server
+package byoc
 
 import (
 	"bytes"
@@ -29,11 +29,126 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+func newTestBYOCGatewayServer(node *core.LivepeerNode) *BYOCGatewayServer {
+	if node == nil {
+		node = mockJobLivepeerNode()
+	}
+	statusStore := NewMockStreamStatusStore()
+
+	return NewBYOCGatewayServer(node, statusStore, nil, nil, nil, http.NewServeMux())
+}
+
+// mockStreamStatusStore is a mock implementation of streamStatusStore for testing
+type mockStreamStatusStore struct {
+	mock.Mock
+	store map[string]map[string]interface{}
+	mu    sync.RWMutex
+}
+
+func NewMockStreamStatusStore() *mockStreamStatusStore {
+	return &mockStreamStatusStore{
+		store: make(map[string]map[string]interface{}),
+	}
+}
+
+// Helper: check if any test added an expectation for a method name.
+func (m *mockStreamStatusStore) hasExpectation(method string) bool {
+	for _, c := range m.ExpectedCalls {
+		if c.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockStreamStatusStore) Store(streamID string, status map[string]interface{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Use mock override if one exists
+	if m.hasExpectation("Store") {
+		m.Called(streamID, status)
+		return
+	}
+
+	// Default real logic
+	if m.store == nil {
+		m.store = make(map[string]map[string]interface{})
+	}
+	m.store[streamID] = status
+}
+
+func (m *mockStreamStatusStore) Clear(streamID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.hasExpectation("Clear") {
+		m.Called(streamID)
+		return
+	}
+
+	delete(m.store, streamID)
+}
+
+func (m *mockStreamStatusStore) Get(streamID string) (map[string]interface{}, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.hasExpectation("Get") {
+		args := m.Called(streamID)
+		if args.Get(0) == nil {
+			return nil, args.Bool(1)
+		}
+		return args.Get(0).(map[string]interface{}), args.Bool(1)
+	}
+
+	value, ok := m.store[streamID]
+	return value, ok
+}
+
+func (m *mockStreamStatusStore) StoreIfNotExists(streamID string, key string, status interface{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.hasExpectation("StoreIfNotExists") {
+		m.Called(streamID, key, status)
+		return
+	}
+
+	if m.store == nil {
+		m.store = make(map[string]map[string]interface{})
+	}
+	if _, ok := m.store[streamID]; !ok {
+		m.store[streamID] = make(map[string]interface{})
+	}
+	if _, exists := m.store[streamID][key]; !exists {
+		m.store[streamID][key] = status
+	}
+}
+
+func (m *mockStreamStatusStore) StoreKey(streamID, key string, status interface{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.hasExpectation("StoreKey") {
+		m.Called(streamID, key, status)
+		return
+	}
+
+	if m.store == nil {
+		m.store = make(map[string]map[string]interface{})
+	}
+	if _, ok := m.store[streamID]; !ok {
+		m.store[streamID] = make(map[string]interface{})
+	}
+	m.store[streamID][key] = status
+}
+
 var stubOrchServerUrl string
 
 // testOrch wraps mockOrchestrator to override a few methods needed by lphttp in tests
 type testStreamOrch struct {
-	*mockOrchestrator
+	*mockJobOrchestrator
 	svc    *url.URL
 	capURL string
 }
@@ -88,11 +203,11 @@ func orchAIStreamStartHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Publish-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, TrickleHTTPPath, "test-stream"))
-	w.Header().Set("X-Subscribe-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, TrickleHTTPPath, "test-stream-out"))
-	w.Header().Set("X-Control-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, TrickleHTTPPath, "test-stream-control"))
-	w.Header().Set("X-Events-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, TrickleHTTPPath, "test-stream-events"))
-	w.Header().Set("X-Data-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, TrickleHTTPPath, "test-stream-data"))
+	w.Header().Set("X-Publish-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, "/ai/trickle/", "test-stream"))
+	w.Header().Set("X-Subscribe-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, "/ai/trickle/", "test-stream-out"))
+	w.Header().Set("X-Control-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, "/ai/trickle/", "test-stream-control"))
+	w.Header().Set("X-Events-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, "/ai/trickle/", "test-stream-events"))
+	w.Header().Set("X-Data-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, "/ai/trickle/", "test-stream-data"))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -105,8 +220,8 @@ func orchAIStreamStartNoUrlsHandler(w http.ResponseWriter, r *http.Request) {
 	//Headers for trickle urls intentionally left out to prevent starting trickle streams for optional streams
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Control-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, TrickleHTTPPath, "test-stream-control"))
-	w.Header().Set("X-Events-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, TrickleHTTPPath, "test-stream-events"))
+	w.Header().Set("X-Control-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, "/ai/trickle/", "test-stream-control"))
+	w.Header().Set("X-Events-Url", fmt.Sprintf("%s%s%s", stubOrchServerUrl, "/ai/trickle/", "test-stream-events"))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -140,7 +255,7 @@ func TestStartStream_MaxBodyLimit_BYOC(t *testing.T) {
 		node.Balances = core.NewAddressBalances(10 * time.Second)
 		defer node.Balances.StopCleanup()
 
-		ls := &LivepeerServer{LivepeerNode: node}
+		bsg := newTestBYOCGatewayServer(node)
 
 		// Prepare a valid job request header
 		jobDetails := JobRequestDetails{StreamId: "test-stream"}
@@ -162,7 +277,7 @@ func TestStartStream_MaxBodyLimit_BYOC(t *testing.T) {
 		req.Header.Set(jobRequestHdr, jobReqB64)
 
 		w := httptest.NewRecorder()
-		handler := ls.StartStream()
+		handler := bsg.StartStream()
 		handler.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
@@ -184,7 +299,7 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 		node.Balances = core.NewAddressBalances(10 * time.Second)
 		defer node.Balances.StopCleanup()
 
-		ls := &LivepeerServer{LivepeerNode: node}
+		bsg := newTestBYOCGatewayServer(node)
 		drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 
 		// Prepare a valid gatewayJob
@@ -209,7 +324,7 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/ai/stream/start", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 
-		urls, code, err := ls.setupStream(context.Background(), req, gatewayJob)
+		urls, code, err := bsg.setupStream(context.Background(), req, gatewayJob)
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusOK, code)
 		assert.NotNil(t, urls)
@@ -225,14 +340,12 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 		assert.NotEmpty(t, urls.UpdateUrl)
 
 		//confirm LivePipeline created
-		stream, ok := ls.LivepeerNode.LivePipelines[urls.StreamId]
-		assert.True(t, ok)
+		stream, err := bsg.livePipeline(urls.StreamId)
+		assert.NoError(t, err)
 		assert.NotNil(t, stream)
 		assert.Equal(t, urls.StreamId, stream.StreamID)
-		assert.Equal(t, stream.StreamRequest(), []byte("{\"params\":{}}"))
-		params := stream.StreamParams()
-		_, checkParamsType := params.(aiRequestParams)
-		assert.True(t, checkParamsType)
+		assert.Equal(t, bsg.livePipelineRequest(urls.StreamId), []byte("{\"params\":{}}"))
+		bsg.removeLivePipeline(urls.StreamId)
 
 		//test with no data output
 		jobParams = JobParameters{EnableVideoIngress: true, EnableVideoEgress: true, EnableDataOutput: false}
@@ -240,8 +353,10 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 		jobReq.Parameters = paramsStr
 		gatewayJob.Job.Params = &jobParams
 		req.Body = io.NopCloser(bytes.NewReader(body))
-		urls, code, err = ls.setupStream(context.Background(), req, gatewayJob)
+		urls, code, err = bsg.setupStream(context.Background(), req, gatewayJob)
+		assert.NotNil(t, urls)
 		assert.Empty(t, urls.DataUrl)
+		bsg.removeLivePipeline(urls.StreamId)
 
 		//test with no video ingress
 		jobParams = JobParameters{EnableVideoIngress: false, EnableVideoEgress: true, EnableDataOutput: true}
@@ -249,9 +364,11 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 		jobReq.Parameters = paramsStr
 		gatewayJob.Job.Params = &jobParams
 		req.Body = io.NopCloser(bytes.NewReader(body))
-		urls, code, err = ls.setupStream(context.Background(), req, gatewayJob)
+		urls, code, err = bsg.setupStream(context.Background(), req, gatewayJob)
+		assert.NotNil(t, urls)
 		assert.Empty(t, urls.WhipUrl)
 		assert.Empty(t, urls.RtmpUrl)
+		bsg.removeLivePipeline(urls.StreamId)
 
 		//test with no video egress
 		jobParams = JobParameters{EnableVideoIngress: true, EnableVideoEgress: false, EnableDataOutput: true}
@@ -259,23 +376,27 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 		jobReq.Parameters = paramsStr
 		gatewayJob.Job.Params = &jobParams
 		req.Body = io.NopCloser(bytes.NewReader(body))
-		urls, code, err = ls.setupStream(context.Background(), req, gatewayJob)
+		urls, code, err = bsg.setupStream(context.Background(), req, gatewayJob)
+		assert.NotNil(t, urls)
 		assert.Empty(t, urls.WhepUrl)
 		assert.Empty(t, urls.RtmpOutputUrl)
+		bsg.removeLivePipeline(urls.StreamId)
 
 		// Test with nil job
-		urls, code, err = ls.setupStream(context.Background(), req, nil)
+		urls, code, err = bsg.setupStream(context.Background(), req, nil)
 		assert.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, code)
 		assert.Nil(t, urls)
+		assert.Zero(t, len(bsg.LivePipelines))
 
 		// Test with invalid JSON body
 		badReq := httptest.NewRequest(http.MethodPost, "/ai/stream/start", bytes.NewReader([]byte("notjson")))
 		badReq.Header.Set("Content-Type", "application/json")
-		urls, code, err = ls.setupStream(context.Background(), badReq, gatewayJob)
+		urls, code, err = bsg.setupStream(context.Background(), badReq, gatewayJob)
 		assert.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, code)
 		assert.Nil(t, urls)
+		assert.Zero(t, len(bsg.LivePipelines))
 
 		// Test with stream name ending in -out (should return nil, 0, nil)
 		outReq := StartRequest{
@@ -287,10 +408,11 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 		outBody, _ := json.Marshal(outReq)
 		outReqHTTP := httptest.NewRequest(http.MethodPost, "/ai/stream/start", bytes.NewReader(outBody))
 		outReqHTTP.Header.Set("Content-Type", "application/json")
-		urls, code, err = ls.setupStream(context.Background(), outReqHTTP, gatewayJob)
+		urls, code, err = bsg.setupStream(context.Background(), outReqHTTP, gatewayJob)
 		assert.NoError(t, err)
 		assert.Equal(t, 0, code)
 		assert.Nil(t, urls)
+		assert.Zero(t, len(bsg.LivePipelines))
 	})
 }
 
@@ -300,15 +422,15 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 
 		// Set up an lphttp-based orchestrator test server with trickle endpoints
 		mux := http.NewServeMux()
-		mockOrch := &mockOrchestrator{}
+		mockOrch := &mockJobOrchestrator{}
 		mockOrch.On("VerifySig", mock.Anything, mock.Anything, mock.Anything).Return(true)
 		mockOrch.On("DebitFees", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 
-		lp := &lphttp{orchestrator: nil, transRPC: mux, node: node}
+		bso := &BYOCOrchestratorServer{orch: nil, httpMux: mux, node: node}
 		// Configure trickle server on the mux (imitate production trickle endpoints)
-		lp.trickleSrv = trickle.ConfigureServer(trickle.TrickleServerConfig{
+		bso.trickleSrv = trickle.ConfigureServer(trickle.TrickleServerConfig{
 			Mux:        mux,
-			BasePath:   TrickleHTTPPath,
+			BasePath:   "/ai/trickle/",
 			Autocreate: true,
 		})
 		// Register orchestrator endpoints used by runStream path
@@ -316,7 +438,7 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 		mux.HandleFunc("/ai/stream/stop", orchAIStreamStopHandler)
 		mux.HandleFunc("/process/token", orchTokenHandler)
 
-		server := httptest.NewServer(lp)
+		server := httptest.NewServer(bso.httpMux)
 		defer server.Close()
 
 		stubOrchServerUrl = server.URL
@@ -327,7 +449,7 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 		defer capabilitySrv.Close()
 
 		// attach our orchestrator implementation to lphttp
-		lp.orchestrator = &testStreamOrch{mockOrchestrator: mockOrch, svc: parsedURL, capURL: capabilitySrv.URL}
+		bso.orch = &testStreamOrch{mockJobOrchestrator: mockOrch, svc: parsedURL, capURL: capabilitySrv.URL}
 
 		// Prepare a gatewayJob with a dummy orchestrator token
 		jobReq := &JobRequest{
@@ -345,8 +467,8 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 		gatewayJob := &gatewayJob{Job: orchJob, Orchs: []core.JobToken{*orchToken}, node: node}
 
 		// Setup a LivepeerServer and a mock pipeline
-		ls := &LivepeerServer{LivepeerNode: node}
-		ls.LivepeerNode.OrchestratorPool = newStubOrchestratorPool(ls.LivepeerNode, []string{server.URL})
+		bsg := newTestBYOCGatewayServer(node)
+		bsg.node.OrchestratorPool = newStubOrchestratorPool(bsg.node, []string{server.URL})
 		drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 		mockSender := pm.MockSender{}
 		mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
@@ -362,8 +484,8 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 		orchJob.Req.Sender = sender.Addr
 		orchJob.Req.Sig = sender.Sig
 		// Minimal aiRequestParams and liveRequestParams
-		params := aiRequestParams{
-			liveParams: &liveRequestParams{
+		params := byocAIRequestParams{
+			liveParams: &byocLiveRequestParams{
 				requestID:      "req-1",
 				stream:         "test-stream",
 				streamID:       "test-stream",
@@ -373,18 +495,18 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 			node: node,
 		}
 
-		ls.LivepeerNode.NewLivePipeline("req-1", "test-stream", "test-capability", params, nil)
+		bsg.newLivePipeline("req-1", "test-stream", "test-capability", params, nil)
 
 		// Should not panic and should clean up
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); ls.runStream(gatewayJob) }()
-		go func() { defer wg.Done(); ls.monitorStream(gatewayJob.Job.Req.ID) }()
+		go func() { defer wg.Done(); bsg.runStream(gatewayJob) }()
+		go func() { defer wg.Done(); bsg.monitorStream(gatewayJob.Job.Req.ID) }()
 
 		// Cancel the stream after a short delay to simulate shutdown
 		done := make(chan struct{})
 		go func() {
-			stream := node.LivePipelines["test-stream"]
+			stream, _ := bsg.livePipeline(gatewayJob.Job.Req.ID)
 
 			if stream != nil {
 				// Wait for kickOrch to be set and call it to cancel the stream
@@ -397,7 +519,7 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 						// Timeout waiting for kickOrch, proceed anyway
 						break waitLoop
 					default:
-						params, err := ls.getStreamRequestParams(stream)
+						params, err := bsg.livePipelineParams(gatewayJob.Job.Req.ID)
 						if err == nil {
 							params.liveParams.mu.Lock()
 							kickOrch = params.liveParams.kickOrch
@@ -415,8 +537,8 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 		<-done
 		// Wait for both goroutines to finish before asserting
 		wg.Wait()
-		_, ok := node.LivePipelines["stest-stream"]
-		assert.False(t, ok)
+		_, err = bsg.livePipeline(params.liveParams.streamID)
+		assert.Error(t, err)
 
 		// Clean up external capabilities streams
 		if node.ExternalCapabilities != nil {
@@ -426,7 +548,7 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 		}
 
 		//confirm external capability stream removed
-		_, ok = node.ExternalCapabilities.GetStream("test-stream")
+		_, ok := node.ExternalCapabilities.GetStream("test-stream")
 		assert.False(t, ok)
 	})
 }
@@ -443,16 +565,16 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 
 		// Set up an lphttp-based orchestrator test server with trickle endpoints
 		mux := http.NewServeMux()
-		mockOrch := &mockOrchestrator{}
+		mockOrch := &mockJobOrchestrator{}
 		mockOrch.On("VerifySig", mock.Anything, mock.Anything, mock.Anything).Return(true)
 		mockOrch.On("DebitFees", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 		mockOrch2 := *mockOrch
 
-		lp := &lphttp{orchestrator: nil, transRPC: mux, node: node}
+		bso := &BYOCOrchestratorServer{orch: nil, httpMux: mux, node: node}
 		// Configure trickle server on the mux (imitate production trickle endpoints)
-		lp.trickleSrv = trickle.ConfigureServer(trickle.TrickleServerConfig{
+		bso.trickleSrv = trickle.ConfigureServer(trickle.TrickleServerConfig{
 			Mux:        mux,
-			BasePath:   TrickleHTTPPath,
+			BasePath:   "/ai/trickle/",
 			Autocreate: true,
 		})
 		// Register orchestrator endpoints used by runStream path - wrap to signal when called
@@ -466,14 +588,14 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 		mux.HandleFunc("/ai/stream/stop", orchAIStreamStopHandler)
 		mux.HandleFunc("/process/token", orchTokenHandler)
 
-		server := httptest.NewServer(lp)
+		server := httptest.NewServer(bso.httpMux)
 		defer server.Close()
 		mux2 := http.NewServeMux()
-		lp2 := &lphttp{orchestrator: nil, transRPC: mux2, node: mockJobLivepeerNode()}
+		bso2 := &BYOCOrchestratorServer{orch: nil, httpMux: mux2, node: mockJobLivepeerNode()}
 		// Configure trickle server on the mux (imitate production trickle endpoints)
-		lp2.trickleSrv = trickle.ConfigureServer(trickle.TrickleServerConfig{
+		bso2.trickleSrv = trickle.ConfigureServer(trickle.TrickleServerConfig{
 			Mux:        mux2,
-			BasePath:   TrickleHTTPPath,
+			BasePath:   "/ai/trickle/",
 			Autocreate: true,
 		})
 		// Register orchestrator endpoints used by runStream path - wrap to signal when called
@@ -487,7 +609,7 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 		mux2.HandleFunc("/ai/stream/stop", orchAIStreamStopHandler)
 		mux2.HandleFunc("/process/token", orchTokenHandler)
 
-		server2 := httptest.NewServer(lp2)
+		server2 := httptest.NewServer(bso2.httpMux)
 		defer server2.Close()
 
 		// Configure mock orchestrator behavior expected by lphttp handlers
@@ -499,8 +621,8 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 		capabilitySrv2 := httptest.NewServer(http.HandlerFunc(orchCapabilityUrlHandler))
 		defer capabilitySrv2.Close()
 		// attach our orchestrator implementation to lphttp
-		lp.orchestrator = &testStreamOrch{mockOrchestrator: mockOrch, svc: parsedURL, capURL: capabilitySrv.URL}
-		lp2.orchestrator = &testStreamOrch{mockOrchestrator: &mockOrch2, svc: parsedURL2, capURL: capabilitySrv2.URL}
+		bso.orch = &testStreamOrch{mockJobOrchestrator: mockOrch, svc: parsedURL, capURL: capabilitySrv.URL}
+		bso2.orch = &testStreamOrch{mockJobOrchestrator: &mockOrch2, svc: parsedURL2, capURL: capabilitySrv2.URL}
 
 		// Prepare a gatewayJob with a dummy orchestrator token
 		jobReq := &JobRequest{
@@ -520,8 +642,8 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 		gatewayJob := &gatewayJob{Job: orchJob, Orchs: []core.JobToken{*orchToken, *orchToken2}, node: node}
 
 		// Setup a LivepeerServer and a mock pipeline
-		ls := &LivepeerServer{LivepeerNode: node}
-		ls.LivepeerNode.OrchestratorPool = newStubOrchestratorPool(ls.LivepeerNode, []string{server.URL, server2.URL})
+		bsg := newTestBYOCGatewayServer(node)
+		bsg.node.OrchestratorPool = newStubOrchestratorPool(bsg.node, []string{server.URL, server2.URL})
 		drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 		mockSender := pm.MockSender{}
 		mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
@@ -537,8 +659,8 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 		orchJob.Req.Sender = sender.Addr
 		orchJob.Req.Sig = sender.Sig
 		// Minimal aiRequestParams and liveRequestParams
-		params := aiRequestParams{
-			liveParams: &liveRequestParams{
+		params := byocAIRequestParams{
+			liveParams: &byocLiveRequestParams{
 				requestID:      "req-1",
 				stream:         "test-stream",
 				streamID:       "test-stream",
@@ -548,14 +670,14 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 			node: node,
 		}
 
-		ls.LivepeerNode.NewLivePipeline("req-1", "test-stream", "test-capability", params, nil)
+		bsg.newLivePipeline("req-1", "test-stream", "test-capability", params, nil)
 
 		streamID := gatewayJob.Job.Req.ID
 		// Should not panic and should clean up
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); ls.runStream(gatewayJob) }()
-		go func() { defer wg.Done(); ls.monitorStream(streamID) }()
+		go func() { defer wg.Done(); bsg.runStream(gatewayJob) }()
+		go func() { defer wg.Done(); bsg.monitorStream(streamID) }()
 
 		// Wait for first orchestrator to be contacted
 		select {
@@ -566,8 +688,7 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 		}
 
 		// Kick the first orchestrator to trigger failover
-		stream := node.LivePipelines["test-stream"]
-		params2, err := ls.getStreamRequestParams(stream)
+		params2, err := bsg.livePipelineParams(streamID)
 		if err != nil {
 			t.Fatalf("Failed to get stream params: %v", err)
 		}
@@ -590,8 +711,7 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 		}
 
 		//kick the second Orchestrator
-		stream = node.LivePipelines["test-stream"]
-		params3, err := ls.getStreamRequestParams(stream)
+		params3, err := bsg.livePipelineParams(streamID)
 		if err != nil {
 			t.Fatalf("Failed to get stream params: %v", err)
 		}
@@ -607,9 +727,9 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 
 		// Wait for both goroutines to finish before asserting
 		wg.Wait()
-		// After cancel, the stream should be removed from LivePipelines
-		_, exists := node.LivePipelines["test-stream"]
-		assert.False(t, exists)
+		// After cancel, the stream should be removed from byoc LivePipelines
+		_, err = bsg.livePipeline(streamID)
+		assert.Error(t, err)
 
 		// Clean up external capabilities streams
 		if node.ExternalCapabilities != nil {
@@ -627,9 +747,7 @@ func TestStartStreamHandler_BYOC(t *testing.T) {
 
 		// Set up an lphttp-based orchestrator test server with trickle endpoints
 		mux := http.NewServeMux()
-		ls := &LivepeerServer{
-			LivepeerNode: node,
-		}
+		bsg := newTestBYOCGatewayServer(node)
 		mockSender := pm.MockSender{}
 		mockSender.On("StartSession", mock.Anything).Return("foo")
 		mockSender.On("CreateTicketBatch", mock.Anything, mock.Anything).Return(mockTicketBatch(10), nil)
@@ -648,7 +766,7 @@ func TestStartStreamHandler_BYOC(t *testing.T) {
 		server := httptest.NewServer(mux)
 		defer server.Close()
 
-		ls.LivepeerNode.OrchestratorPool = newStubOrchestratorPool(ls.LivepeerNode, []string{server.URL})
+		bsg.node.OrchestratorPool = newStubOrchestratorPool(bsg.node, []string{server.URL})
 		drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 		// Prepare a valid StartRequest body
 		startReq := StartRequest{
@@ -665,7 +783,7 @@ func TestStartStreamHandler_BYOC(t *testing.T) {
 
 		w := httptest.NewRecorder()
 
-		handler := ls.StartStream()
+		handler := bsg.StartStream()
 		handler.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -673,19 +791,18 @@ func TestStartStreamHandler_BYOC(t *testing.T) {
 		var streamUrls StreamUrls
 		err := json.Unmarshal(body, &streamUrls)
 		assert.NoError(t, err)
-		stream, exits := ls.LivepeerNode.LivePipelines[streamUrls.StreamId]
-		assert.True(t, exits)
+		stream, err := bsg.livePipeline(streamUrls.StreamId)
+		assert.NoError(t, err)
 		assert.NotNil(t, stream)
 		assert.Equal(t, streamUrls.StreamId, stream.StreamID)
-		params := stream.StreamParams()
-		streamParams, checkParamsType := params.(aiRequestParams)
-		assert.True(t, checkParamsType)
+
 		//kick the orch to stop the stream and cleanup
 		<-orch1Started
+		streamParams, _ := bsg.livePipelineParams(streamUrls.StreamId)
 		if streamParams.liveParams.kickOrch != nil {
 			streamParams.liveParams.kickOrch(errors.New("test cleanup"))
 		}
-		node.Balances.StopCleanup()
+		bsg.node.Balances.StopCleanup()
 	})
 }
 
@@ -694,12 +811,12 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 	t.Run("StreamNotFound", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			// Test case 1: Stream doesn't exist - should return 404
-			ls := &LivepeerServer{LivepeerNode: &core.LivepeerNode{LivePipelines: map[string]*core.LivePipeline{}}}
+			bsg := newTestBYOCGatewayServer(nil)
 			req := httptest.NewRequest(http.MethodPost, "/ai/stream/{streamId}/stop", nil)
 			req.SetPathValue("streamId", "non-existent-stream")
 			w := httptest.NewRecorder()
 
-			handler := ls.StopStream()
+			handler := bsg.StopStream()
 			handler.ServeHTTP(w, req)
 
 			assert.Equal(t, http.StatusNotFound, w.Code)
@@ -728,7 +845,7 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 			defer server.Close()
 
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 			drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 			mockSender := pm.MockSender{}
 			mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
@@ -742,13 +859,11 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 			// Create minimal AI session with properly formatted URL
 			token := createMockJobToken(server.URL)
 
-			sess, err := tokenToAISession(*token)
-
 			// Create stream parameters
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *token,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -758,12 +873,12 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 			}
 
 			// Add the stream to LivePipelines
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			stream := bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 			assert.NotNil(t, stream)
 
 			// Verify stream exists before stopping
-			_, exists := ls.LivepeerNode.LivePipelines[streamID]
-			assert.True(t, exists, "Stream should exist before stopping")
+			_, err := bsg.livePipeline(streamID)
+			assert.NoError(t, err, "Stream should exist before stopping")
 
 			// Create stop request with proper job header
 			jobParams := JobParameters{EnableVideoIngress: true, EnableVideoEgress: true, EnableDataOutput: true}
@@ -786,7 +901,7 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			handler := ls.StopStream()
+			handler := bsg.StopStream()
 			handler.ServeHTTP(w, req)
 
 			// The response might vary depending on orchestrator communication success
@@ -795,8 +910,8 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 				"Should return valid HTTP status")
 
 			// Verify stream was removed from LivePipelines (this should always happen)
-			_, exists = ls.LivepeerNode.LivePipelines[streamID]
-			assert.False(t, exists, "Stream should be removed after stopping")
+			_, err = bsg.livePipeline(streamID)
+			assert.Error(t, err, "Stream should be removed after stopping")
 		})
 	})
 
@@ -818,7 +933,7 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 			defer server.Close()
 
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 			drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 			mockSender := pm.MockSender{}
 			mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
@@ -830,13 +945,11 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 
 			// Create minimal AI session
 			token := createMockJobToken(server.URL)
-			sess, err := tokenToAISession(*token)
-			assert.NoError(t, err)
 
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *token,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -846,7 +959,7 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 			}
 
 			// Add the stream
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			stream := bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 			assert.NotNil(t, stream)
 
 			// Create stop request
@@ -869,7 +982,7 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			handler := ls.StopStream()
+			handler := bsg.StopStream()
 			handler.ServeHTTP(w, req)
 
 			// Returns 200 OK because Gateway removed the stream. If the Orchestrator errors, it will return
@@ -877,8 +990,8 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 			assert.Equal(t, http.StatusOK, w.Code)
 
 			// Stream should still be removed even if orchestrator returns error
-			_, exists := ls.LivepeerNode.LivePipelines[streamID]
-			assert.False(t, exists, "Stream should be removed even on orchestrator error")
+			_, err = bsg.livePipeline(streamID)
+			assert.Error(t, err, "Stream should be removed even on orchestrator error")
 		})
 	})
 }
@@ -897,7 +1010,7 @@ func TestStartStreamWhipIngestHandler_BYOC(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(orchTokenHandler))
 		defer server.Close()
 		node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-		ls := &LivepeerServer{LivepeerNode: node}
+		bsg := newTestBYOCGatewayServer(node)
 
 		drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 
@@ -923,17 +1036,17 @@ func TestStartStreamWhipIngestHandler_BYOC(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/ai/stream/start", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 
-		urls, code, err := ls.setupStream(context.Background(), req, gatewayJob)
+		urls, code, err := bsg.setupStream(context.Background(), req, gatewayJob)
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusOK, code)
 		assert.NotNil(t, urls)
 		assert.Equal(t, "teststream-streamid", urls.StreamId) //combination of stream name (Stream) and id (StreamId)
 
-		stream, ok := ls.LivepeerNode.LivePipelines[urls.StreamId]
-		assert.True(t, ok)
+		stream, err := bsg.livePipeline(urls.StreamId)
+		assert.NoError(t, err)
 		assert.NotNil(t, stream)
 
-		params, err := ls.getStreamRequestParams(stream)
+		params, err := bsg.livePipelineParams(stream.StreamID)
 		assert.NoError(t, err)
 
 		//these should be empty/nil before whip ingest starts
@@ -942,7 +1055,7 @@ func TestStartStreamWhipIngestHandler_BYOC(t *testing.T) {
 
 		// whipServer is required, using nil will test setup up to initializing the WHIP connection
 
-		handler := ls.StartStreamWhipIngest(whipServer)
+		handler := bsg.StartStreamWhipIngest(whipServer)
 
 		// Blank SDP offer to test through creating WHIP connection
 		sdpOffer1 := ""
@@ -958,14 +1071,14 @@ func TestStartStreamWhipIngestHandler_BYOC(t *testing.T) {
 
 		// This completes testing through making the WHIP connection which would
 		// then be covered by tests in whip_server.go
-		newParams, err := ls.getStreamRequestParams(stream)
+		newParams, err := bsg.livePipelineParams(stream.StreamID)
 		assert.NoError(t, err)
 		assert.NotNil(t, newParams.liveParams.kickInput)
 
-		stream.UpdateStreamParams(newParams)
+		bsg.updateLivePipelineParams(stream.StreamID, newParams)
 		newParams.liveParams.kickInput(errors.New("test complete"))
 
-		stream.StopStream(nil)
+		bsg.stopLivePipeline(stream.StreamID, nil)
 	})
 }
 
@@ -973,8 +1086,8 @@ func TestGetStreamDataHandler_BYOC(t *testing.T) {
 	t.Run("StreamData_MissingStreamId", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			// Test with missing stream ID - should return 400
-			ls := &LivepeerServer{}
-			handler := ls.UpdateStream()
+			bsg := newTestBYOCGatewayServer(nil)
+			handler := bsg.UpdateStream()
 			req := httptest.NewRequest(http.MethodPost, "/ai/stream/{streamId}/update", nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -990,7 +1103,7 @@ func TestGetStreamDataHandler_BYOC(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(orchTokenHandler))
 			defer server.Close()
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 			drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 
 			// Prepare a valid gatewayJob
@@ -1015,17 +1128,17 @@ func TestGetStreamDataHandler_BYOC(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/ai/stream/start", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 
-			urls, code, err := ls.setupStream(context.Background(), req, gatewayJob)
+			urls, code, err := bsg.setupStream(context.Background(), req, gatewayJob)
 			assert.NoError(t, err)
 			assert.Equal(t, http.StatusOK, code)
 			assert.NotNil(t, urls)
 			assert.Equal(t, "teststream-streamid", urls.StreamId) //combination of stream name (Stream) and id (StreamId)
 
-			stream, ok := ls.LivepeerNode.LivePipelines[urls.StreamId]
-			assert.True(t, ok)
+			stream, err := bsg.livePipeline(urls.StreamId)
+			assert.NoError(t, err)
 			assert.NotNil(t, stream)
 
-			params, err := ls.getStreamRequestParams(stream)
+			params, err := bsg.livePipelineParams(stream.StreamID)
 			assert.NoError(t, err)
 			assert.NotNil(t, params.liveParams)
 
@@ -1035,7 +1148,7 @@ func TestGetStreamDataHandler_BYOC(t *testing.T) {
 			writer.Write([]byte("initial-data"))
 			writer.Close()
 
-			handler := ls.GetStreamData()
+			handler := bsg.StreamData()
 			dataReq := httptest.NewRequest(http.MethodGet, "/ai/stream/{streamId}/data", nil)
 			dataReq.SetPathValue("streamId", "teststream-streamid")
 
@@ -1089,8 +1202,8 @@ func TestUpdateStreamHandler_BYOC(t *testing.T) {
 	t.Run("UpdateStream_MissingStreamId", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			// Test with missing stream ID - should return 400
-			ls := &LivepeerServer{}
-			handler := ls.UpdateStream()
+			bsg := newTestBYOCGatewayServer(nil)
+			handler := bsg.UpdateStream()
 			req := httptest.NewRequest(http.MethodPost, "/ai/stream/{streamId}/update", nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -1103,7 +1216,7 @@ func TestUpdateStreamHandler_BYOC(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			// Test with non-existent stream - should return 404
 			node := mockJobLivepeerNode()
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 
 			req := httptest.NewRequest(http.MethodPost, "/ai/stream/{streamId}/update",
 				strings.NewReader(`{"param1": "value1", "param2": "value2"}`))
@@ -1111,7 +1224,7 @@ func TestUpdateStreamHandler_BYOC(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			w := httptest.NewRecorder()
-			handler := ls.UpdateStream()
+			handler := bsg.UpdateStream()
 			handler.ServeHTTP(w, req)
 
 			assert.Equal(t, http.StatusNotFound, w.Code)
@@ -1135,24 +1248,24 @@ func TestUpdateStreamHandler_BYOC(t *testing.T) {
 			node.Balances = core.NewAddressBalances(10 * time.Second)
 			defer node.Balances.StopCleanup()
 
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 			drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 
 			// Test 1: Wrong HTTP method
 			req := httptest.NewRequest(http.MethodGet, "/ai/stream/{streamId}/update", nil)
 			req.SetPathValue("streamId", "test-stream")
 			w := httptest.NewRecorder()
-			ls.UpdateStream().ServeHTTP(w, req)
+			bsg.UpdateStream().ServeHTTP(w, req)
 			assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 
 			// Test 2: Request too large
 			streamID := "test-stream-large"
 			token := createMockJobToken(server.URL)
-			sess, _ := tokenToAISession(*token)
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *token,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -1160,7 +1273,7 @@ func TestUpdateStreamHandler_BYOC(t *testing.T) {
 				},
 				node: node,
 			}
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 
 			// Create job request header
 			jobParams := JobParameters{EnableVideoIngress: true, EnableVideoEgress: true, EnableDataOutput: true}
@@ -1184,20 +1297,20 @@ func TestUpdateStreamHandler_BYOC(t *testing.T) {
 			req.Header.Set(jobRequestHdr, jobReqB64)
 			w = httptest.NewRecorder()
 
-			ls.UpdateStream().ServeHTTP(w, req)
+			bsg.UpdateStream().ServeHTTP(w, req)
 			assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 			assert.Contains(t, w.Body.String(), "request body too large")
 
-			stream.StopStream(nil)
+			bsg.stopLivePipeline(streamID, nil)
 		})
 	})
 }
 
 func TestGetStreamStatusHandler_BYOC(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		ls := &LivepeerServer{}
-		GatewayStatus.Clear("any-stream")
-		handler := ls.GetStreamStatus()
+		bsg := newTestBYOCGatewayServer(nil)
+		bsg.statusStore.Clear("any-stream")
+		handler := bsg.StreamStatus()
 		// stream does not exist
 		req := httptest.NewRequest(http.MethodGet, "/ai/stream/{streamId}/status", nil)
 		req.SetPathValue("streamId", "any-stream")
@@ -1207,9 +1320,9 @@ func TestGetStreamStatusHandler_BYOC(t *testing.T) {
 
 		// stream exists
 		node := mockJobLivepeerNode()
-		ls.LivepeerNode = node
-		node.NewLivePipeline("req-1", "any-stream", "test-capability", aiRequestParams{}, nil)
-		GatewayStatus.StoreKey("any-stream", "test", "test")
+		bsg.node = node
+		bsg.newLivePipeline("req-1", "any-stream", "test-capability", byocAIRequestParams{}, nil)
+		bsg.statusStore.StoreKey("any-stream", "test", "test")
 		req = httptest.NewRequest(http.MethodGet, "/ai/stream/{streamId}/status", nil)
 		req.SetPathValue("streamId", "any-stream")
 		w = httptest.NewRecorder()
@@ -1248,19 +1361,17 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			defer node.Balances.StopCleanup()
 
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 			drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 
 			// Create a mock stream with AI session
 			streamID := "test-payment-stream"
 			token := createMockJobToken(server.URL)
-			sess, err := tokenToAISession(*token)
-			assert.NoError(t, err)
 
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *token,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -1269,7 +1380,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 				node: node,
 			}
 
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 
 			// Create a job sender
 			jobSender := &core.JobSender{
@@ -1279,7 +1390,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 
 			// Test sendPaymentForStream
 			ctx := context.Background()
-			err = ls.sendPaymentForStream(ctx, stream, jobSender)
+			err := bsg.sendPaymentForStream(ctx, streamID, jobSender)
 
 			// Should succeed
 			assert.NoError(t, err)
@@ -1288,7 +1399,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			assert.True(t, paymentReceived, "Payment should have been sent to orchestrator")
 
 			// Clean up
-			stream.StopStream(nil)
+			bsg.stopLivePipeline(streamID, nil)
 		})
 	})
 
@@ -1304,16 +1415,15 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			node.Balances = core.NewAddressBalances(10 * time.Second)
 			defer node.Balances.StopCleanup()
 
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 
 			// Create a stream with invalid session (using an invalid URL that won't require DNS)
 			streamID := "test-invalid-token"
 			invalidToken := createMockJobToken("http://127.0.0.1:1/invalid") // Port 1 will fail quickly without DNS
-			sess, _ := tokenToAISession(*invalidToken)
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *invalidToken,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -1321,7 +1431,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 				},
 				node: node,
 			}
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1329,11 +1439,11 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			}
 
 			// Should fail to get new token
-			err := ls.sendPaymentForStream(context.Background(), stream, jobSender)
+			err := bsg.sendPaymentForStream(context.Background(), streamID, jobSender)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "127.0.0.1")
 
-			stream.StopStream(nil)
+			bsg.stopLivePipeline(streamID, nil)
 		})
 	})
 
@@ -1347,15 +1457,14 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			defer server.Close()
 			defer server.CloseClientConnections()
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 
 			streamID := "test-payment-creation-fail"
 			token := createMockJobToken(server.URL)
-			sess, _ := tokenToAISession(*token)
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *token,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -1363,7 +1472,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 				},
 				node: node,
 			}
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1371,10 +1480,10 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			}
 
 			// Should continue even if payment creation fails (no payment required)
-			err := ls.sendPaymentForStream(context.Background(), stream, jobSender)
+			err := bsg.sendPaymentForStream(context.Background(), streamID, jobSender)
 			assert.NoError(t, err) // Should not error, just logs and continues
 
-			stream.StopStream(nil)
+			bsg.stopLivePipeline(streamID, nil)
 		})
 	})
 
@@ -1404,16 +1513,15 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			defer node.Balances.StopCleanup()
 
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 			drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 
 			streamID := "test-payment-error"
 			token := createMockJobToken(server.URL)
-			sess, _ := tokenToAISession(*token)
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *token,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -1421,7 +1529,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 				},
 				node: node,
 			}
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1429,11 +1537,11 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			}
 
 			// Should fail with payment error
-			err := ls.sendPaymentForStream(context.Background(), stream, jobSender)
+			err := bsg.sendPaymentForStream(context.Background(), streamID, jobSender)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "unexpected status code")
 
-			stream.StopStream(nil)
+			bsg.stopLivePipeline(streamID, nil)
 		})
 	})
 
@@ -1466,16 +1574,15 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			defer node.Balances.StopCleanup()
 
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 
 			// Create stream with valid initial session
 			streamID := "test-token-no-price"
 			token := createMockJobToken(server.URL)
-			sess, _ := tokenToAISession(*token)
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &sess,
+					orchToken:      *token,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -1483,7 +1590,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 				},
 				node: node,
 			}
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1491,10 +1598,10 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			}
 
 			// Should fail during token to session conversion
-			err := ls.sendPaymentForStream(context.Background(), stream, jobSender)
+			err := bsg.sendPaymentForStream(context.Background(), streamID, jobSender)
 			assert.NoError(t, err)
 
-			stream.StopStream(nil)
+			bsg.stopLivePipeline(streamID, nil)
 		})
 	})
 
@@ -1525,18 +1632,18 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			defer node.Balances.StopCleanup()
 
 			node.OrchestratorPool = newStubOrchestratorPool(node, []string{server.URL})
-			ls := &LivepeerServer{LivepeerNode: node}
+			bsg := newTestBYOCGatewayServer(node)
 			drivers.NodeStorage = drivers.NewMemoryDriver(nil)
 
 			streamID := "test-params-update"
 			originalToken := createMockJobToken(server.URL)
-			originalSess, _ := tokenToAISession(*originalToken)
-			originalSessionAddr := originalSess.Address()
 
-			params := aiRequestParams{
-				liveParams: &liveRequestParams{
+			originalSessionAddr := originalToken.Address()
+
+			params := byocAIRequestParams{
+				liveParams: &byocLiveRequestParams{
 					requestID:      "req-1",
-					sess:           &originalSess,
+					orchToken:      *originalToken,
 					stream:         streamID,
 					streamID:       streamID,
 					sendErrorEvent: func(err error) {},
@@ -1544,7 +1651,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 				},
 				node: node,
 			}
-			stream := node.NewLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1552,44 +1659,29 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 			}
 
 			// Send payment
-			err := ls.sendPaymentForStream(context.Background(), stream, jobSender)
+			err := bsg.sendPaymentForStream(context.Background(), streamID, jobSender)
 			assert.NoError(t, err)
 
-			// Verify that stream params were updated with new session
-			updatedParams, err := ls.getStreamRequestParams(stream)
+			// Verify that stream params were updated with new token
+			updatedParams, err := bsg.livePipelineParams(streamID)
 			assert.NoError(t, err)
 
 			// The session should be updated (new token fetched)
-			updatedSessionAddr := updatedParams.liveParams.sess.Address()
+			updatedSessionAddr := updatedParams.liveParams.orchToken.Address()
 			// In a real scenario, this might be different, but our mock returns the same token
 			// The important thing is that UpdateStreamParams was called
-			assert.NotNil(t, updatedParams.liveParams.sess)
+			assert.NotNil(t, updatedParams.liveParams.orchToken)
 			assert.Equal(t, originalSessionAddr, updatedSessionAddr) // Same because mock returns same token
 
-			stream.StopStream(nil)
+			bsg.stopLivePipeline(streamID, nil)
 		})
-	})
-}
-func TestTokenSessionConversion_BYOC(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		token := createMockJobToken("http://example.com")
-		sess, err := tokenToAISession(*token)
-		assert.True(t, err != nil || sess != (AISession{}))
-		assert.NotNil(t, sess.OrchestratorInfo)
-		assert.NotNil(t, sess.OrchestratorInfo.TicketParams)
-
-		assert.NotEmpty(t, sess.Address())
-		assert.NotEmpty(t, sess.Transcoder())
-
-		_, err = sessionToToken(&sess)
-		assert.True(t, err != nil || true)
 	})
 }
 
 func TestGetStreamRequestParams_BYOC(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		ls := &LivepeerServer{LivepeerNode: mockJobLivepeerNode()}
-		_, err := ls.getStreamRequestParams(nil)
+		bsg := newTestBYOCGatewayServer(nil)
+		_, err := bsg.livePipelineParams("")
 		assert.Error(t, err)
 	})
 }
