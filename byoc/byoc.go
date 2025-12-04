@@ -32,8 +32,8 @@ type BYOCGatewayServer struct {
 	statusStore     StatusStore
 	slowOrchChecker SlowOrchChecker
 
-	LivePipelines map[string]*BYOCLivePipeline
-	mu            *sync.RWMutex
+	StreamPipelines map[string]*BYOCStreamPipeline
+	mu              *sync.RWMutex
 }
 
 // NewBYOCServer creates a new BYOC server instance
@@ -48,7 +48,7 @@ func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, slow
 		mu:              &sync.RWMutex{},
 	}
 
-	bsg.LivePipelines = make(map[string]*BYOCLivePipeline)
+	bsg.StreamPipelines = make(map[string]*BYOCStreamPipeline)
 
 	bsg.registerRoutes()
 	return bsg
@@ -67,7 +67,7 @@ func NewBYOCOrchestratorServer(node *core.LivepeerNode, orch Orchestrator, trick
 	return bso
 }
 
-func (bsg *BYOCGatewayServer) newLivePipeline(requestID, streamID, pipeline string, streamParams byocAIRequestParams, streamRequest []byte) *BYOCLivePipeline {
+func (bsg *BYOCGatewayServer) newStreamPipeline(requestID, streamID, pipeline string, streamParams byocAIRequestParams, streamRequest []byte) *BYOCStreamPipeline {
 	streamCtx, streamCancel := context.WithCancelCause(context.Background())
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
@@ -78,7 +78,7 @@ func (bsg *BYOCGatewayServer) newLivePipeline(requestID, streamID, pipeline stri
 		streamRequest = []byte("{}")
 	}
 
-	bsg.LivePipelines[streamID] = &BYOCLivePipeline{
+	bsg.StreamPipelines[streamID] = &BYOCStreamPipeline{
 		RequestID:     requestID,
 		StreamID:      streamID,
 		Pipeline:      pipeline,
@@ -88,28 +88,28 @@ func (bsg *BYOCGatewayServer) newLivePipeline(requestID, streamID, pipeline stri
 		streamRequest: streamRequest,
 		OutCond:       sync.NewCond(bsg.mu),
 	}
-	return bsg.LivePipelines[streamID]
+	return bsg.StreamPipelines[streamID]
 }
 
-func (bsg *BYOCGatewayServer) livePipeline(streamId string) (*BYOCLivePipeline, error) {
+func (bsg *BYOCGatewayServer) streamPipeline(streamId string) (*BYOCStreamPipeline, error) {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	p, exists := bsg.LivePipelines[streamId]
+	p, exists := bsg.StreamPipelines[streamId]
 	if !exists {
-		return nil, fmt.Errorf("BYOC Live pipeline %s not found", streamId)
+		return nil, fmt.Errorf("BYOC Stream pipeline %s not found", streamId)
 	}
 	return p, nil
 }
 
-func (bsg *BYOCGatewayServer) livePipelineExists(streamId string) bool {
+func (bsg *BYOCGatewayServer) streamPipelineExists(streamId string) bool {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	_, exists := bsg.LivePipelines[streamId]
+	_, exists := bsg.StreamPipelines[streamId]
 	return exists
 }
 
-func (bsg *BYOCGatewayServer) stopLivePipeline(streamId string, err error) {
-	p, err := bsg.livePipeline(streamId)
+func (bsg *BYOCGatewayServer) stopStreamPipeline(streamId string, err error) {
+	p, err := bsg.streamPipeline(streamId)
 	if err == nil {
 		glog.Info("found pipeline, stopping")
 		p.OutCond.Broadcast()
@@ -127,44 +127,44 @@ func (bsg *BYOCGatewayServer) stopLivePipeline(streamId string, err error) {
 	}
 }
 
-func (bsg *BYOCGatewayServer) removeLivePipeline(streamId string) {
+func (bsg *BYOCGatewayServer) removeStreamPipeline(streamId string) {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	delete(bsg.LivePipelines, streamId)
+	delete(bsg.StreamPipelines, streamId)
 }
 
-func (bsg *BYOCGatewayServer) livePipelineParams(streamId string) (byocAIRequestParams, error) {
+func (bsg *BYOCGatewayServer) streamPipelineParams(streamId string) (byocAIRequestParams, error) {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	p, exists := bsg.LivePipelines[streamId]
+	p, exists := bsg.StreamPipelines[streamId]
 	if !exists {
-		return byocAIRequestParams{}, fmt.Errorf("BYOC Live pipeline %s not found", streamId)
+		return byocAIRequestParams{}, fmt.Errorf("BYOC Stream pipeline %s not found", streamId)
 	}
 	return p.streamParams, nil
 }
 
-func (bsg *BYOCGatewayServer) updateLivePipelineParams(streamId string, newParams byocAIRequestParams) {
+func (bsg *BYOCGatewayServer) updateStreamPipelineParams(streamId string, newParams byocAIRequestParams) {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	p, exists := bsg.LivePipelines[streamId]
+	p, exists := bsg.StreamPipelines[streamId]
 	if exists {
 		p.streamParams = newParams
 	}
 }
 
-func (bsg *BYOCGatewayServer) livePipelineContext(streamId string) context.Context {
+func (bsg *BYOCGatewayServer) streamPipelineContext(streamId string) context.Context {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	if p, exists := bsg.LivePipelines[streamId]; exists {
+	if p, exists := bsg.StreamPipelines[streamId]; exists {
 		return p.streamCtx
 	}
 	return nil
 }
 
-func (bsg *BYOCGatewayServer) livePipelineRequest(streamId string) []byte {
+func (bsg *BYOCGatewayServer) streamPipelineRequest(streamId string) []byte {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	p, exists := bsg.LivePipelines[streamId]
+	p, exists := bsg.StreamPipelines[streamId]
 	if exists {
 		return p.streamRequest
 	}

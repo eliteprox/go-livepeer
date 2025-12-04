@@ -81,7 +81,7 @@ type SlowOrchChecker interface {
 	GetCount() int
 }
 
-type BYOCLivePipeline struct {
+type BYOCStreamPipeline struct {
 	RequestID    string
 	StreamID     string
 	Params       []byte

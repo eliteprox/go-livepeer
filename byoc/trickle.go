@@ -166,7 +166,7 @@ func (bsg *BYOCGatewayServer) startTricklePublish(ctx context.Context, url *url.
 }
 
 func (bsg *BYOCGatewayServer) suspendOrchestrator(ctx context.Context, params byocAIRequestParams) {
-	if !bsg.livePipelineExists(params.liveParams.streamID) {
+	if !bsg.streamPipelineExists(params.liveParams.streamID) {
 		// If the ingest was closed, then do not suspend the orchestrator
 		return
 	}
@@ -228,7 +228,7 @@ func (bsg *BYOCGatewayServer) startTrickleSubscribe(ctx context.Context, url *ur
 				return
 			default:
 			}
-			if !bsg.livePipelineExists(params.liveParams.streamID) {
+			if !bsg.streamPipelineExists(params.liveParams.streamID) {
 				clog.Infof(ctx, "trickle subscribe stopping, input stream does not exist.")
 				break
 			}
@@ -276,7 +276,7 @@ func (bsg *BYOCGatewayServer) startTrickleSubscribe(ctx context.Context, url *ur
 				params.liveParams.mu.Unlock()
 				segmentAge := time.Since(lastSegmentTime)
 				maxSegmentDelay := params.liveParams.outSegmentTimeout / 2
-				if segmentAge < maxSegmentDelay && bsg.livePipelineExists(params.liveParams.streamID) {
+				if segmentAge < maxSegmentDelay && bsg.streamPipelineExists(params.liveParams.streamID) {
 					// we have some recent input but no output from orch, so kick
 					bsg.suspendOrchestrator(ctx, params)
 					stopProcessing(ctx, params, fmt.Errorf("trickle subscribe error, swapping: %w", err))
@@ -340,7 +340,7 @@ func (bsg *BYOCGatewayServer) startTrickleSubscribe(ctx context.Context, url *ur
 				params.liveParams.mu.Unlock()
 				lastInputSegmentAge := time.Since(lastInputSegmentTime)
 				hasRecentInput := lastInputSegmentAge < segmentTimeout/2
-				if hasRecentInput && bsg.livePipelineExists(params.liveParams.streamID) {
+				if hasRecentInput && bsg.streamPipelineExists(params.liveParams.streamID) {
 					// abandon the orchestrator
 					bsg.suspendOrchestrator(ctx, params)
 					stopProcessing(ctx, params, fmt.Errorf("timeout waiting for segments"))
@@ -371,7 +371,7 @@ func (bsg *BYOCGatewayServer) ffmpegOutput(ctx context.Context, outputUrl string
 	}()
 	for {
 		clog.V(6).Infof(ctx, "Starting output rtmp")
-		if !bsg.livePipelineExists(params.liveParams.streamID) {
+		if !bsg.streamPipelineExists(params.liveParams.streamID) {
 			clog.Errorf(ctx, "Stopping output rtmp stream, input stream does not exist.")
 			break
 		}
@@ -455,7 +455,7 @@ func copySegment(ctx context.Context, segment *http.Response, w io.Writer, seq i
 
 func (bsg *BYOCGatewayServer) setOutWriter(ctx context.Context, writer *media.RingBuffer, params byocAIRequestParams) {
 	streamId, requestID := params.liveParams.streamID, params.liveParams.requestID
-	stream, err := bsg.livePipeline(streamId)
+	stream, err := bsg.streamPipeline(streamId)
 
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
@@ -500,7 +500,7 @@ func (bsg *BYOCGatewayServer) startControlPublish(ctx context.Context, control *
 		})
 	}
 
-	stream, err := bsg.livePipeline(params.liveParams.streamID)
+	stream, err := bsg.streamPipeline(params.liveParams.streamID)
 	if err != nil {
 		stopProcessing(ctx, params, fmt.Errorf("control session did not exist"))
 		return
@@ -739,7 +739,7 @@ func (bsg *BYOCGatewayServer) startEventsSubscribe(ctx context.Context, url *url
 func (bsg *BYOCGatewayServer) getOutWriter(streamId string) (*media.RingBuffer, string) {
 	bsg.mu.Lock()
 	defer bsg.mu.Unlock()
-	stream, err := bsg.livePipeline(streamId)
+	stream, err := bsg.streamPipeline(streamId)
 	if err != nil || stream.Closed {
 		return nil, ""
 	}

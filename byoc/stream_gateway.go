@@ -73,7 +73,7 @@ func (bsg *BYOCGatewayServer) StopStream() http.Handler {
 		ctx := r.Context()
 		streamId := r.PathValue("streamId")
 		glog.Infof("Received stop request for stream %s", streamId)
-		stream, err := bsg.livePipeline(streamId)
+		stream, err := bsg.streamPipeline(streamId)
 		if err != nil {
 			http.Error(w, "Stream not found", http.StatusNotFound)
 			return
@@ -81,8 +81,8 @@ func (bsg *BYOCGatewayServer) StopStream() http.Handler {
 
 		orch := stream.streamParams.liveParams.orchToken
 		glog.Infof("Pipeline found, stopping %s", streamId)
-		bsg.stopLivePipeline(streamId, nil)
-		bsg.removeLivePipeline(streamId)
+		bsg.stopStreamPipeline(streamId, nil)
+		bsg.removeStreamPipeline(streamId)
 		glog.Infof("Sending stop request to Orchestrator %s", orch.ServiceAddr)
 		stopJob, err := bsg.setupGatewayJob(ctx, r, true)
 		if err != nil {
@@ -128,7 +128,7 @@ func (bsg *BYOCGatewayServer) StopStream() http.Handler {
 
 func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 	streamID := gatewayJob.Job.Req.ID
-	stream, err := bsg.livePipeline(streamID)
+	stream, err := bsg.streamPipeline(streamID)
 	if err != nil {
 		glog.Errorf("Stream %s not found", streamID)
 		return
@@ -137,13 +137,13 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 	var exitErr error
 	defer func() {
 		// Best-effort cleanup
-		bsg.stopLivePipeline(streamID, exitErr)
+		bsg.stopStreamPipeline(streamID, exitErr)
 	}()
 	//this context passes to all channels that will close when stream is canceled
-	ctx := bsg.livePipelineContext(streamID)
+	ctx := bsg.streamPipelineContext(streamID)
 	ctx = clog.AddVal(ctx, "stream_id", streamID)
 
-	params, err := bsg.livePipelineParams(streamID)
+	params, err := bsg.streamPipelineParams(streamID)
 	if err != nil {
 		clog.Errorf(ctx, "Error getting stream request params: %s", err)
 		exitErr = err
@@ -181,8 +181,8 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 		params.liveParams.orchToken = orch
 		params.liveParams.mu.Unlock()
 		// Create new params instance for this orchestrator to avoid race conditions
-		bsg.updateLivePipelineParams(streamID, params) //update params used to kickOrch (perOrchCancel) and urls
-		streamReq := bsg.livePipelineRequest(streamID)
+		bsg.updateStreamPipelineParams(streamID, params) //update params used to kickOrch (perOrchCancel) and urls
+		streamReq := bsg.streamPipelineRequest(streamID)
 
 		orchResp, _, err := bsg.sendJobToOrch(ctx, nil, gatewayJob.Job.Req, gatewayJob.SignedJobReq, orch, "/ai/stream/start", streamReq)
 		if err != nil {
@@ -214,7 +214,7 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 			// or if passing `nil` as a CancelCause
 			err = nil
 		}
-		if _, err := bsg.livePipeline(streamID); err != nil {
+		if _, err := bsg.streamPipeline(streamID); err != nil {
 			clog.Info(ctx, "No stream exists, skipping orchestrator swap")
 			break
 		}
@@ -255,7 +255,7 @@ func (bsg *BYOCGatewayServer) monitorStream(streamId string) {
 	ctx := context.Background()
 	ctx = clog.AddVal(ctx, "stream_id", streamId)
 
-	stream, err := bsg.livePipeline(streamId)
+	stream, err := bsg.streamPipeline(streamId)
 	if err != nil {
 		clog.Errorf(ctx, "Stream %s not found: %v", streamId, err)
 		return
@@ -275,16 +275,16 @@ func (bsg *BYOCGatewayServer) monitorStream(streamId string) {
 	}
 
 	//ensure live pipeline is cleaned up if monitoring ends
-	defer bsg.removeLivePipeline(streamId)
+	defer bsg.removeStreamPipeline(streamId)
 	//start monitoring loop
-	streamCtx := bsg.livePipelineContext(streamId)
+	streamCtx := bsg.streamPipelineContext(streamId)
 	for {
 		select {
 		case <-streamCtx.Done():
 			clog.Infof(ctx, "Stream %s stopped, ending monitoring", streamId)
 			return
 		case <-pmtTicker.C:
-			if _, err := bsg.livePipeline(streamId); err != nil {
+			if _, err := bsg.streamPipeline(streamId); err != nil {
 				clog.Infof(ctx, "Input stream does not exist for stream %s, ending monitoring", streamId)
 				return
 			}
@@ -298,9 +298,9 @@ func (bsg *BYOCGatewayServer) monitorStream(streamId string) {
 }
 
 func (bsg *BYOCGatewayServer) sendPaymentForStream(ctx context.Context, streamID string, jobSender *core.JobSender) error {
-	stream, err := bsg.livePipeline(streamID)
+	stream, err := bsg.streamPipeline(streamID)
 	if err != nil {
-		clog.Errorf(ctx, "Error getting live pipeline for stream %s: %v", streamID, err)
+		clog.Errorf(ctx, "Error getting stream pipeline for stream %s: %v", streamID, err)
 		return err
 	}
 	stream.streamParams.liveParams.mu.Lock()
@@ -317,7 +317,7 @@ func (bsg *BYOCGatewayServer) sendPaymentForStream(ctx context.Context, streamID
 	stream.streamParams.liveParams.mu.Lock()
 	stream.streamParams.liveParams.orchToken = *newToken
 	stream.streamParams.liveParams.mu.Unlock()
-	bsg.updateLivePipelineParams(streamID, stream.streamParams)
+	bsg.updateStreamPipelineParams(streamID, stream.streamParams)
 
 	// send the payment
 	jobDetails := JobRequestDetails{StreamId: streamID}
@@ -553,7 +553,7 @@ func (bsg *BYOCGatewayServer) setupStream(ctx context.Context, r *http.Request, 
 	})
 
 	inputStreamExists := func(streamId string) bool {
-		return bsg.livePipelineExists(streamId)
+		return bsg.streamPipelineExists(streamId)
 	}
 
 	//params set with ingest types:
@@ -602,7 +602,7 @@ func (bsg *BYOCGatewayServer) setupStream(ctx context.Context, r *http.Request, 
 		"params": pipelineParams,
 	}
 	paramsReqBytes, _ := json.Marshal(paramsReq)
-	bsg.newLivePipeline(requestID, streamID, pipeline, params, paramsReqBytes) //track the pipeline for cancellation
+	bsg.newStreamPipeline(requestID, streamID, pipeline, params, paramsReqBytes) //track the pipeline for cancellation
 
 	job.Job.Req.ID = streamID
 	streamUrls := StreamUrls{
@@ -628,7 +628,7 @@ func (bsg *BYOCGatewayServer) StartStreamRTMPIngest() http.Handler {
 		streamId := r.PathValue("streamId")
 		ctx = clog.AddVal(ctx, "stream_id", streamId)
 
-		stream, err := bsg.livePipeline(streamId)
+		stream, err := bsg.streamPipeline(streamId)
 		if err != nil {
 			respondJsonError(ctx, w, fmt.Errorf("stream not found: %s", streamId), http.StatusNotFound)
 			return
@@ -674,9 +674,9 @@ func (bsg *BYOCGatewayServer) StartStreamRTMPIngest() http.Handler {
 			if err != nil {
 				clog.Errorf(ctx, "Failed to kick input connection: %s", err)
 			}
-			stream, err := bsg.livePipeline(streamId)
+			stream, err := bsg.streamPipeline(streamId)
 			if err != nil {
-				clog.Errorf(ctx, "Error getting live pipeline for stream %s: %s", streamId, err)
+				clog.Errorf(ctx, "Error getting stream pipeline for stream %s: %s", streamId, err)
 				return
 			}
 			stream.streamParams.liveParams.sendErrorEvent(streamErr)
@@ -684,7 +684,7 @@ func (bsg *BYOCGatewayServer) StartStreamRTMPIngest() http.Handler {
 
 		stream.streamParams.liveParams.localRTMPPrefix = mediaMTXInputURL
 		stream.streamParams.liveParams.kickInput = kickInput
-		bsg.updateLivePipelineParams(streamId, stream.streamParams) //add kickInput to stream params
+		bsg.updateStreamPipelineParams(streamId, stream.streamParams) //add kickInput to stream params
 
 		// Kick off the RTMP pull and segmentation
 		clog.Infof(ctx, "Starting RTMP ingest from MediaMTX")
@@ -707,7 +707,7 @@ func (bsg *BYOCGatewayServer) StartStreamRTMPIngest() http.Handler {
 			})
 			stream.streamParams.liveParams.segmentReader.Close()
 
-			bsg.stopLivePipeline(streamId, nil)
+			bsg.stopStreamPipeline(streamId, nil)
 		}()
 
 		//write response
@@ -723,7 +723,7 @@ func (bsg *BYOCGatewayServer) StartStreamWhipIngest(whipServer *media.WHIPServer
 		streamId := r.PathValue("streamId")
 		ctx = clog.AddVal(ctx, "stream_id", streamId)
 
-		stream, err := bsg.livePipeline(streamId)
+		stream, err := bsg.streamPipeline(streamId)
 		if err != nil {
 			respondJsonError(ctx, w, fmt.Errorf("stream not found: %s", streamId), http.StatusNotFound)
 			return
@@ -743,7 +743,7 @@ func (bsg *BYOCGatewayServer) StartStreamWhipIngest(whipServer *media.WHIPServer
 			whipConn.Close()
 		}
 		stream.streamParams.liveParams.kickInput = kickInput
-		bsg.updateLivePipelineParams(streamId, stream.streamParams) //add kickInput to stream params
+		bsg.updateStreamPipelineParams(streamId, stream.streamParams) //add kickInput to stream params
 
 		//wait for the WHIP connection to close and then cleanup
 		go func() {
@@ -752,13 +752,13 @@ func (bsg *BYOCGatewayServer) StartStreamWhipIngest(whipServer *media.WHIPServer
 			go bsg.runStats(statsContext, whipConn, streamId, stream.Pipeline, stream.streamParams.liveParams.requestID)
 
 			whipConn.AwaitClose()
-			stream, err := bsg.livePipeline(streamId)
+			stream, err := bsg.streamPipeline(streamId)
 			if err != nil {
-				clog.Errorf(ctx, "Error getting live pipeline for stream %s: %s", streamId, err)
+				clog.Errorf(ctx, "Error getting stream pipeline for stream %s: %s", streamId, err)
 				return
 			}
 			stream.streamParams.liveParams.segmentReader.Close()
-			bsg.stopLivePipeline(streamId, nil)
+			bsg.stopStreamPipeline(streamId, nil)
 			clog.Info(ctx, "Live cleaned up")
 		}()
 
@@ -773,7 +773,7 @@ func (bsg *BYOCGatewayServer) StartStreamWhipIngest(whipServer *media.WHIPServer
 	})
 }
 
-func (bsg *BYOCGatewayServer) startStreamProcessing(ctx context.Context, stream *BYOCLivePipeline, params byocAIRequestParams, orchUrls orchTrickleUrls) error {
+func (bsg *BYOCGatewayServer) startStreamProcessing(ctx context.Context, stream *BYOCStreamPipeline, params byocAIRequestParams, orchUrls orchTrickleUrls) error {
 	// Lock once and copy all needed fields
 	params.liveParams.mu.Lock()
 	orch := params.liveParams.orchToken
@@ -836,7 +836,7 @@ func (bsg *BYOCGatewayServer) StreamData() http.Handler {
 		ctx = clog.AddVal(ctx, "stream", streamId)
 
 		// Get the live pipeline for this stream
-		stream, err := bsg.livePipeline(streamId)
+		stream, err := bsg.streamPipeline(streamId)
 		if err != nil {
 			http.Error(w, "Stream not found", http.StatusNotFound)
 			return
@@ -907,14 +907,14 @@ func (bsg *BYOCGatewayServer) UpdateStream() http.Handler {
 			http.Error(w, "Missing stream name", http.StatusBadRequest)
 			return
 		}
-		stream, err := bsg.livePipeline(streamId)
+		stream, err := bsg.streamPipeline(streamId)
 		if err != nil {
 			// Stream not found
 			http.Error(w, "Stream not found", http.StatusNotFound)
 			return
 		}
 
-		params, err := bsg.livePipelineParams(streamId)
+		params, err := bsg.streamPipelineParams(streamId)
 		if err != nil {
 			clog.Errorf(ctx, "Error getting stream request params: %s", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1024,12 +1024,12 @@ func (bsg *BYOCGatewayServer) StreamStatus() http.Handler {
 func (bsg *BYOCGatewayServer) monitorCurrentLiveSessions() {
 	countByPipeline := make(map[string]int)
 	var streams []string
-	for k, v := range bsg.LivePipelines {
+	for k, v := range bsg.StreamPipelines {
 		countByPipeline[v.Pipeline] = countByPipeline[v.Pipeline] + 1
 		streams = append(streams, k)
 	}
 	monitor.AICurrentLiveSessions(countByPipeline)
-	clog.V(common.DEBUG).Infof(context.Background(), "Streams currently live (total=%d): %v", len(bsg.LivePipelines), streams)
+	clog.V(common.DEBUG).Infof(context.Background(), "Streams currently live (total=%d): %v", len(bsg.StreamPipelines), streams)
 }
 
 func (bsg *BYOCGatewayServer) runStats(ctx context.Context, whipConn *media.WHIPConnection, streamID string, pipelineID string, requestID string) {

@@ -339,13 +339,13 @@ func TestStreamStart_SetupStream(t *testing.T) {
 		assert.NotEmpty(t, urls.StatusUrl)
 		assert.NotEmpty(t, urls.UpdateUrl)
 
-		//confirm LivePipeline created
-		stream, err := bsg.livePipeline(urls.StreamId)
+		//confirm StreamPipeline created
+		stream, err := bsg.streamPipeline(urls.StreamId)
 		assert.NoError(t, err)
 		assert.NotNil(t, stream)
 		assert.Equal(t, urls.StreamId, stream.StreamID)
-		assert.Equal(t, bsg.livePipelineRequest(urls.StreamId), []byte("{\"params\":{}}"))
-		bsg.removeLivePipeline(urls.StreamId)
+		assert.Equal(t, bsg.streamPipelineRequest(urls.StreamId), []byte("{\"params\":{}}"))
+		bsg.removeStreamPipeline(urls.StreamId)
 
 		//test with no data output
 		jobParams = JobParameters{EnableVideoIngress: true, EnableVideoEgress: true, EnableDataOutput: false}
@@ -356,7 +356,7 @@ func TestStreamStart_SetupStream(t *testing.T) {
 		urls, code, err = bsg.setupStream(context.Background(), req, gatewayJob)
 		assert.NotNil(t, urls)
 		assert.Empty(t, urls.DataUrl)
-		bsg.removeLivePipeline(urls.StreamId)
+		bsg.removeStreamPipeline(urls.StreamId)
 
 		//test with no video ingress
 		jobParams = JobParameters{EnableVideoIngress: false, EnableVideoEgress: true, EnableDataOutput: true}
@@ -368,7 +368,7 @@ func TestStreamStart_SetupStream(t *testing.T) {
 		assert.NotNil(t, urls)
 		assert.Empty(t, urls.WhipUrl)
 		assert.Empty(t, urls.RtmpUrl)
-		bsg.removeLivePipeline(urls.StreamId)
+		bsg.removeStreamPipeline(urls.StreamId)
 
 		//test with no video egress
 		jobParams = JobParameters{EnableVideoIngress: true, EnableVideoEgress: false, EnableDataOutput: true}
@@ -380,14 +380,14 @@ func TestStreamStart_SetupStream(t *testing.T) {
 		assert.NotNil(t, urls)
 		assert.Empty(t, urls.WhepUrl)
 		assert.Empty(t, urls.RtmpOutputUrl)
-		bsg.removeLivePipeline(urls.StreamId)
+		bsg.removeStreamPipeline(urls.StreamId)
 
 		// Test with nil job
 		urls, code, err = bsg.setupStream(context.Background(), req, nil)
 		assert.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, code)
 		assert.Nil(t, urls)
-		assert.Zero(t, len(bsg.LivePipelines))
+		assert.Zero(t, len(bsg.StreamPipelines))
 
 		// Test with invalid JSON body
 		badReq := httptest.NewRequest(http.MethodPost, "/ai/stream/start", bytes.NewReader([]byte("notjson")))
@@ -396,7 +396,7 @@ func TestStreamStart_SetupStream(t *testing.T) {
 		assert.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, code)
 		assert.Nil(t, urls)
-		assert.Zero(t, len(bsg.LivePipelines))
+		assert.Zero(t, len(bsg.StreamPipelines))
 
 		// Test with stream name ending in -out (should return nil, 0, nil)
 		outReq := StartRequest{
@@ -412,7 +412,7 @@ func TestStreamStart_SetupStream(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, 0, code)
 		assert.Nil(t, urls)
-		assert.Zero(t, len(bsg.LivePipelines))
+		assert.Zero(t, len(bsg.StreamPipelines))
 	})
 }
 
@@ -495,7 +495,7 @@ func TestRunStream_RunAndCancelStream(t *testing.T) {
 			node: node,
 		}
 
-		bsg.newLivePipeline("req-1", "test-stream", "test-capability", params, nil)
+		bsg.newStreamPipeline("req-1", "test-stream", "test-capability", params, nil)
 
 		// Should not panic and should clean up
 		var wg sync.WaitGroup
@@ -506,7 +506,7 @@ func TestRunStream_RunAndCancelStream(t *testing.T) {
 		// Cancel the stream after a short delay to simulate shutdown
 		done := make(chan struct{})
 		go func() {
-			stream, _ := bsg.livePipeline(gatewayJob.Job.Req.ID)
+			stream, _ := bsg.streamPipeline(gatewayJob.Job.Req.ID)
 
 			if stream != nil {
 				// Wait for kickOrch to be set and call it to cancel the stream
@@ -519,7 +519,7 @@ func TestRunStream_RunAndCancelStream(t *testing.T) {
 						// Timeout waiting for kickOrch, proceed anyway
 						break waitLoop
 					default:
-						params, err := bsg.livePipelineParams(gatewayJob.Job.Req.ID)
+						params, err := bsg.streamPipelineParams(gatewayJob.Job.Req.ID)
 						if err == nil {
 							params.liveParams.mu.Lock()
 							kickOrch = params.liveParams.kickOrch
@@ -537,7 +537,7 @@ func TestRunStream_RunAndCancelStream(t *testing.T) {
 		<-done
 		// Wait for both goroutines to finish before asserting
 		wg.Wait()
-		_, err = bsg.livePipeline(params.liveParams.streamID)
+		_, err = bsg.streamPipeline(params.liveParams.streamID)
 		assert.Error(t, err)
 
 		// Clean up external capabilities streams
@@ -670,7 +670,7 @@ func TestRunStream_OrchestratorFailover(t *testing.T) {
 			node: node,
 		}
 
-		bsg.newLivePipeline("req-1", "test-stream", "test-capability", params, nil)
+		bsg.newStreamPipeline("req-1", "test-stream", "test-capability", params, nil)
 
 		streamID := gatewayJob.Job.Req.ID
 		// Should not panic and should clean up
@@ -688,7 +688,7 @@ func TestRunStream_OrchestratorFailover(t *testing.T) {
 		}
 
 		// Kick the first orchestrator to trigger failover
-		params2, err := bsg.livePipelineParams(streamID)
+		params2, err := bsg.streamPipelineParams(streamID)
 		if err != nil {
 			t.Fatalf("Failed to get stream params: %v", err)
 		}
@@ -711,7 +711,7 @@ func TestRunStream_OrchestratorFailover(t *testing.T) {
 		}
 
 		//kick the second Orchestrator
-		params3, err := bsg.livePipelineParams(streamID)
+		params3, err := bsg.streamPipelineParams(streamID)
 		if err != nil {
 			t.Fatalf("Failed to get stream params: %v", err)
 		}
@@ -727,8 +727,8 @@ func TestRunStream_OrchestratorFailover(t *testing.T) {
 
 		// Wait for both goroutines to finish before asserting
 		wg.Wait()
-		// After cancel, the stream should be removed from byoc LivePipelines
-		_, err = bsg.livePipeline(streamID)
+		// After cancel, the stream should be removed from byoc StreamPipelines
+		_, err = bsg.streamPipeline(streamID)
 		assert.Error(t, err)
 
 		// Clean up external capabilities streams
@@ -791,14 +791,14 @@ func TestStartStreamHandler(t *testing.T) {
 		var streamUrls StreamUrls
 		err := json.Unmarshal(body, &streamUrls)
 		assert.NoError(t, err)
-		stream, err := bsg.livePipeline(streamUrls.StreamId)
+		stream, err := bsg.streamPipeline(streamUrls.StreamId)
 		assert.NoError(t, err)
 		assert.NotNil(t, stream)
 		assert.Equal(t, streamUrls.StreamId, stream.StreamID)
 
 		//kick the orch to stop the stream and cleanup
 		<-orch1Started
-		streamParams, _ := bsg.livePipelineParams(streamUrls.StreamId)
+		streamParams, _ := bsg.streamPipelineParams(streamUrls.StreamId)
 		if streamParams.liveParams.kickOrch != nil {
 			streamParams.liveParams.kickOrch(errors.New("test cleanup"))
 		}
@@ -872,12 +872,12 @@ func TestStopStreamHandler(t *testing.T) {
 				node: node,
 			}
 
-			// Add the stream to LivePipelines
-			stream := bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			// Add the stream to StreamPipelines
+			stream := bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 			assert.NotNil(t, stream)
 
 			// Verify stream exists before stopping
-			_, err := bsg.livePipeline(streamID)
+			_, err := bsg.streamPipeline(streamID)
 			assert.NoError(t, err, "Stream should exist before stopping")
 
 			// Create stop request with proper job header
@@ -909,8 +909,8 @@ func TestStopStreamHandler(t *testing.T) {
 			assert.Contains(t, []int{http.StatusOK, http.StatusInternalServerError, http.StatusBadRequest}, w.Code,
 				"Should return valid HTTP status")
 
-			// Verify stream was removed from LivePipelines (this should always happen)
-			_, err = bsg.livePipeline(streamID)
+			// Verify stream was removed from StreamPipelines (this should always happen)
+			_, err = bsg.streamPipeline(streamID)
 			assert.Error(t, err, "Stream should be removed after stopping")
 		})
 	})
@@ -959,7 +959,7 @@ func TestStopStreamHandler(t *testing.T) {
 			}
 
 			// Add the stream
-			stream := bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			stream := bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 			assert.NotNil(t, stream)
 
 			// Create stop request
@@ -990,7 +990,7 @@ func TestStopStreamHandler(t *testing.T) {
 			assert.Equal(t, http.StatusOK, w.Code)
 
 			// Stream should still be removed even if orchestrator returns error
-			_, err = bsg.livePipeline(streamID)
+			_, err = bsg.streamPipeline(streamID)
 			assert.Error(t, err, "Stream should be removed even on orchestrator error")
 		})
 	})
@@ -1042,11 +1042,11 @@ func TestStartStreamWhipIngestHandler(t *testing.T) {
 		assert.NotNil(t, urls)
 		assert.Equal(t, "teststream-streamid", urls.StreamId) //combination of stream name (Stream) and id (StreamId)
 
-		stream, err := bsg.livePipeline(urls.StreamId)
+		stream, err := bsg.streamPipeline(urls.StreamId)
 		assert.NoError(t, err)
 		assert.NotNil(t, stream)
 
-		params, err := bsg.livePipelineParams(stream.StreamID)
+		params, err := bsg.streamPipelineParams(stream.StreamID)
 		assert.NoError(t, err)
 
 		//these should be empty/nil before whip ingest starts
@@ -1071,14 +1071,14 @@ func TestStartStreamWhipIngestHandler(t *testing.T) {
 
 		// This completes testing through making the WHIP connection which would
 		// then be covered by tests in whip_server.go
-		newParams, err := bsg.livePipelineParams(stream.StreamID)
+		newParams, err := bsg.streamPipelineParams(stream.StreamID)
 		assert.NoError(t, err)
 		assert.NotNil(t, newParams.liveParams.kickInput)
 
-		bsg.updateLivePipelineParams(stream.StreamID, newParams)
+		bsg.updateStreamPipelineParams(stream.StreamID, newParams)
 		newParams.liveParams.kickInput(errors.New("test complete"))
 
-		bsg.stopLivePipeline(stream.StreamID, nil)
+		bsg.stopStreamPipeline(stream.StreamID, nil)
 	})
 }
 
@@ -1134,11 +1134,11 @@ func TestGetStreamDataHandler(t *testing.T) {
 			assert.NotNil(t, urls)
 			assert.Equal(t, "teststream-streamid", urls.StreamId) //combination of stream name (Stream) and id (StreamId)
 
-			stream, err := bsg.livePipeline(urls.StreamId)
+			stream, err := bsg.streamPipeline(urls.StreamId)
 			assert.NoError(t, err)
 			assert.NotNil(t, stream)
 
-			params, err := bsg.livePipelineParams(stream.StreamID)
+			params, err := bsg.streamPipelineParams(stream.StreamID)
 			assert.NoError(t, err)
 			assert.NotNil(t, params.liveParams)
 
@@ -1273,7 +1273,7 @@ func TestUpdateStreamHandler(t *testing.T) {
 				},
 				node: node,
 			}
-			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 
 			// Create job request header
 			jobParams := JobParameters{EnableVideoIngress: true, EnableVideoEgress: true, EnableDataOutput: true}
@@ -1301,7 +1301,7 @@ func TestUpdateStreamHandler(t *testing.T) {
 			assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 			assert.Contains(t, w.Body.String(), "request body too large")
 
-			bsg.stopLivePipeline(streamID, nil)
+			bsg.stopStreamPipeline(streamID, nil)
 		})
 	})
 }
@@ -1321,7 +1321,7 @@ func TestGetStreamStatusHandler(t *testing.T) {
 		// stream exists
 		node := mockJobLivepeerNode()
 		bsg.node = node
-		bsg.newLivePipeline("req-1", "any-stream", "test-capability", byocAIRequestParams{}, nil)
+		bsg.newStreamPipeline("req-1", "any-stream", "test-capability", byocAIRequestParams{}, nil)
 		bsg.statusStore.StoreKey("any-stream", "test", "test")
 		req = httptest.NewRequest(http.MethodGet, "/ai/stream/{streamId}/status", nil)
 		req.SetPathValue("streamId", "any-stream")
@@ -1380,7 +1380,7 @@ func TestSendPaymentForStream(t *testing.T) {
 				node: node,
 			}
 
-			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 
 			// Create a job sender
 			jobSender := &core.JobSender{
@@ -1399,7 +1399,7 @@ func TestSendPaymentForStream(t *testing.T) {
 			assert.True(t, paymentReceived, "Payment should have been sent to orchestrator")
 
 			// Clean up
-			bsg.stopLivePipeline(streamID, nil)
+			bsg.stopStreamPipeline(streamID, nil)
 		})
 	})
 
@@ -1431,7 +1431,7 @@ func TestSendPaymentForStream(t *testing.T) {
 				},
 				node: node,
 			}
-			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1443,7 +1443,7 @@ func TestSendPaymentForStream(t *testing.T) {
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "127.0.0.1")
 
-			bsg.stopLivePipeline(streamID, nil)
+			bsg.stopStreamPipeline(streamID, nil)
 		})
 	})
 
@@ -1472,7 +1472,7 @@ func TestSendPaymentForStream(t *testing.T) {
 				},
 				node: node,
 			}
-			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1483,7 +1483,7 @@ func TestSendPaymentForStream(t *testing.T) {
 			err := bsg.sendPaymentForStream(context.Background(), streamID, jobSender)
 			assert.NoError(t, err) // Should not error, just logs and continues
 
-			bsg.stopLivePipeline(streamID, nil)
+			bsg.stopStreamPipeline(streamID, nil)
 		})
 	})
 
@@ -1529,7 +1529,7 @@ func TestSendPaymentForStream(t *testing.T) {
 				},
 				node: node,
 			}
-			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1541,7 +1541,7 @@ func TestSendPaymentForStream(t *testing.T) {
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "unexpected status code")
 
-			bsg.stopLivePipeline(streamID, nil)
+			bsg.stopStreamPipeline(streamID, nil)
 		})
 	})
 
@@ -1590,7 +1590,7 @@ func TestSendPaymentForStream(t *testing.T) {
 				},
 				node: node,
 			}
-			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1601,7 +1601,7 @@ func TestSendPaymentForStream(t *testing.T) {
 			err := bsg.sendPaymentForStream(context.Background(), streamID, jobSender)
 			assert.NoError(t, err)
 
-			bsg.stopLivePipeline(streamID, nil)
+			bsg.stopStreamPipeline(streamID, nil)
 		})
 	})
 
@@ -1651,7 +1651,7 @@ func TestSendPaymentForStream(t *testing.T) {
 				},
 				node: node,
 			}
-			_ = bsg.newLivePipeline("req-1", streamID, "test-capability", params, nil)
+			_ = bsg.newStreamPipeline("req-1", streamID, "test-capability", params, nil)
 
 			jobSender := &core.JobSender{
 				Addr: "0x1111111111111111111111111111111111111111",
@@ -1663,7 +1663,7 @@ func TestSendPaymentForStream(t *testing.T) {
 			assert.NoError(t, err)
 
 			// Verify that stream params were updated with new token
-			updatedParams, err := bsg.livePipelineParams(streamID)
+			updatedParams, err := bsg.streamPipelineParams(streamID)
 			assert.NoError(t, err)
 
 			// The session should be updated (new token fetched)
@@ -1673,7 +1673,7 @@ func TestSendPaymentForStream(t *testing.T) {
 			assert.NotNil(t, updatedParams.liveParams.orchToken)
 			assert.Equal(t, originalSessionAddr, updatedSessionAddr) // Same because mock returns same token
 
-			bsg.stopLivePipeline(streamID, nil)
+			bsg.stopStreamPipeline(streamID, nil)
 		})
 	})
 }
@@ -1681,7 +1681,7 @@ func TestSendPaymentForStream(t *testing.T) {
 func TestGetStreamRequestParams(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bsg := newTestBYOCGatewayServer(nil)
-		_, err := bsg.livePipelineParams("")
+		_, err := bsg.streamPipelineParams("")
 		assert.Error(t, err)
 	})
 }
