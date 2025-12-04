@@ -10,7 +10,6 @@ orchestrator.go: Code that is called only when the node is in orchestrator mode.
 package core
 
 import (
-	"context"
 	"errors"
 	"math/big"
 	"math/rand"
@@ -188,13 +187,6 @@ type LivePipeline struct {
 	OutCond      *sync.Cond
 	OutWriter    *media.RingBuffer
 	Closed       bool
-
-	DataWriter *media.SegmentWriter
-
-	streamCtx     context.Context
-	streamCancel  context.CancelCauseFunc
-	streamParams  interface{}
-	streamRequest []byte
 }
 
 // NewLivepeerNode creates a new Livepeer Node. Eth can be nil.

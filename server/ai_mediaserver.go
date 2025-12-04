@@ -98,9 +98,8 @@ func startAIMediaServer(ctx context.Context, ls *LivepeerServer) error {
 
 	// Configure WHIP ingest only if an addr is specified.
 	// TODO use a proper cli flag
-	var whipServer *media.WHIPServer
 	if os.Getenv("LIVE_AI_WHIP_ADDR") != "" {
-		whipServer = media.NewWHIPServer()
+		whipServer := media.NewWHIPServer()
 		ls.HTTPMux.Handle("POST /live/video-to-video/{stream}/whip", ls.CreateWhip(whipServer))
 		ls.HTTPMux.Handle("HEAD /live/video-to-video/{stream}/whip", ls.WithCode(http.StatusMethodNotAllowed))
 		ls.HTTPMux.Handle("OPTIONS /live/video-to-video/{stream}/whip", ls.WithCode(http.StatusNoContent))

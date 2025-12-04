@@ -81,9 +81,7 @@ func startTricklePublish(ctx context.Context, url *url.URL, params aiRequestPara
 	ctx, cancel := context.WithCancel(ctx)
 	priceInfo := sess.OrchestratorInfo.PriceInfo
 	var paymentProcessor *LivePaymentProcessor
-	// Only start payment processor if we have valid price info and auth token
-	// BYOC does not require AuthToken for payment, so this will skip the live payment processor for BYOC streaming
-	if priceInfo != nil && priceInfo.PricePerUnit != 0 && sess.OrchestratorInfo.AuthToken != nil {
+	if priceInfo != nil && priceInfo.PricePerUnit != 0 {
 		paymentSender := livePaymentSender{}
 		sendPaymentFunc := func(inPixels int64) error {
 			return paymentSender.SendPayment(context.Background(), &SegmentInfoSender{
@@ -201,26 +199,23 @@ func suspendOrchestrator(ctx context.Context, params aiRequestParams) {
 		// If the ingest was closed, then do not suspend the orchestrator
 		return
 	}
-	//live-video-to-video
-	if params.sessManager != nil {
-		sel, err := params.sessManager.getSelector(ctx, core.Capability_LiveVideoToVideo, params.liveParams.pipeline)
-		if err != nil {
-			clog.Warningf(ctx, "Error suspending orchestrator: %v", err)
-			return
-		}
-		if sel == nil || sel.suspender == nil || params.liveParams == nil || params.liveParams.sess == nil || params.liveParams.sess.OrchestratorInfo == nil {
-			clog.Warningf(ctx, "Error suspending orchestrator: selector or suspender is nil")
-			return
-		}
-		// Remove the session from the current pool
-		sel.Remove(params.liveParams.sess)
-		sel.warmPool.mu.Lock()
-		sel.warmPool.selector.Remove(params.liveParams.sess.BroadcastSession)
-		sel.warmPool.mu.Unlock()
-		// We do selection every 6 min, so it effectively means the Orchestrator won't be selected for the next 30 min (unless there is no other O available)
-		clog.Infof(ctx, "Suspending orchestrator %s with penalty %d", params.liveParams.sess.Transcoder(), aiLiveVideoToVideoPenalty)
-		sel.suspender.suspend(params.liveParams.sess.Transcoder(), aiLiveVideoToVideoPenalty)
+	sel, err := params.sessManager.getSelector(ctx, core.Capability_LiveVideoToVideo, params.liveParams.pipeline)
+	if err != nil {
+		clog.Warningf(ctx, "Error suspending orchestrator: %v", err)
+		return
 	}
+	if sel == nil || sel.suspender == nil || params.liveParams == nil || params.liveParams.sess == nil || params.liveParams.sess.OrchestratorInfo == nil {
+		clog.Warningf(ctx, "Error suspending orchestrator: selector or suspender is nil")
+		return
+	}
+	// Remove the session from the current pool
+	sel.Remove(params.liveParams.sess)
+	sel.warmPool.mu.Lock()
+	sel.warmPool.selector.Remove(params.liveParams.sess.BroadcastSession)
+	sel.warmPool.mu.Unlock()
+	// We do selection every 6 min, so it effectively means the Orchestrator won't be selected for the next 30 min (unless there is no other O available)
+	clog.Infof(ctx, "Suspending orchestrator %s with penalty %d", params.liveParams.sess.Transcoder(), aiLiveVideoToVideoPenalty)
+	sel.suspender.suspend(params.liveParams.sess.Transcoder(), aiLiveVideoToVideoPenalty)
 }
 
 func startTrickleSubscribe(ctx context.Context, url *url.URL, params aiRequestParams, sess *AISession) {
