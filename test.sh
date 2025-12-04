@@ -22,8 +22,6 @@ cd ..
 cd server
 go test -run TestSelectSession_ -race
 go test -run RegisterConnection -race
-go test -run TestRunStream_RunAndCancel -race
-go test -run TestRunStream_OrchestratorFailover -race
 cd ..
 
 cd media
@@ -32,6 +30,11 @@ cd ..
 
 cd trickle
 go test -race -timeout 10s
+cd ..
+
+cd byoc
+go test -run TestRunStream_RunAndCancel -race
+go test -run TestRunStream_OrchestratorFailover -race
 cd ..
 
 ./test_args.sh

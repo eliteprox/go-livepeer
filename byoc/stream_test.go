@@ -239,7 +239,7 @@ func orchCapabilityUrlHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func TestStartStream_MaxBodyLimit_BYOC(t *testing.T) {
+func TestStartStream_MaxBodyLimit(t *testing.T) {
 	// Setup server with minimal dependencies
 	synctest.Test(t, func(t *testing.T) {
 		node := mockJobLivepeerNode()
@@ -284,7 +284,7 @@ func TestStartStream_MaxBodyLimit_BYOC(t *testing.T) {
 	})
 }
 
-func TestStreamStart_SetupStream_BYOC(t *testing.T) {
+func TestStreamStart_SetupStream(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		node := mockJobLivepeerNode()
 		server := httptest.NewServer(http.HandlerFunc(orchTokenHandler))
@@ -416,7 +416,7 @@ func TestStreamStart_SetupStream_BYOC(t *testing.T) {
 	})
 }
 
-func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
+func TestRunStream_RunAndCancelStream(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		node := mockJobLivepeerNode()
 
@@ -555,7 +555,7 @@ func TestRunStream_RunAndCancelStream_BYOC(t *testing.T) {
 
 // TestRunStream_OrchestratorFailover tests that runStream fails over to a second orchestrator
 // when the first one fails, and stops when the second orchestrator also fails
-func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
+func TestRunStream_OrchestratorFailover(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		node := mockJobLivepeerNode()
 
@@ -740,7 +740,7 @@ func TestRunStream_OrchestratorFailover_BYOC(t *testing.T) {
 	})
 }
 
-func TestStartStreamHandler_BYOC(t *testing.T) {
+func TestStartStreamHandler(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		node := mockJobLivepeerNode()
 		orch1Started := make(chan struct{}, 1)
@@ -806,7 +806,7 @@ func TestStartStreamHandler_BYOC(t *testing.T) {
 	})
 }
 
-func TestStopStreamHandler_BYOC(t *testing.T) {
+func TestStopStreamHandler(t *testing.T) {
 
 	t.Run("StreamNotFound", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
@@ -996,7 +996,7 @@ func TestStopStreamHandler_BYOC(t *testing.T) {
 	})
 }
 
-func TestStartStreamWhipIngestHandler_BYOC(t *testing.T) {
+func TestStartStreamWhipIngestHandler(t *testing.T) {
 	min := 10000
 	max := 65535
 	// rand.Intn returns a non-negative pseudo-random integer in the range [0, n).
@@ -1082,7 +1082,7 @@ func TestStartStreamWhipIngestHandler_BYOC(t *testing.T) {
 	})
 }
 
-func TestGetStreamDataHandler_BYOC(t *testing.T) {
+func TestGetStreamDataHandler(t *testing.T) {
 	t.Run("StreamData_MissingStreamId", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			// Test with missing stream ID - should return 400
@@ -1198,7 +1198,7 @@ func TestGetStreamDataHandler_BYOC(t *testing.T) {
 	})
 }
 
-func TestUpdateStreamHandler_BYOC(t *testing.T) {
+func TestUpdateStreamHandler(t *testing.T) {
 	t.Run("UpdateStream_MissingStreamId", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			// Test with missing stream ID - should return 400
@@ -1306,7 +1306,7 @@ func TestUpdateStreamHandler_BYOC(t *testing.T) {
 	})
 }
 
-func TestGetStreamStatusHandler_BYOC(t *testing.T) {
+func TestGetStreamStatusHandler(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bsg := newTestBYOCGatewayServer(nil)
 		bsg.statusStore.Clear("any-stream")
@@ -1331,7 +1331,7 @@ func TestGetStreamStatusHandler_BYOC(t *testing.T) {
 	})
 }
 
-func TestSendPaymentForStream_BYOC(t *testing.T) {
+func TestSendPaymentForStream(t *testing.T) {
 	t.Run("Success_ValidPayment", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			paymentReceived := false
@@ -1678,7 +1678,7 @@ func TestSendPaymentForStream_BYOC(t *testing.T) {
 	})
 }
 
-func TestGetStreamRequestParams_BYOC(t *testing.T) {
+func TestGetStreamRequestParams(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		bsg := newTestBYOCGatewayServer(nil)
 		_, err := bsg.livePipelineParams("")
