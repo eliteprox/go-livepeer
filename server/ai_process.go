@@ -96,7 +96,6 @@ type aiRequestParams struct {
 // For live video pipelines
 type liveRequestParams struct {
 	segmentReader *media.SwitchableSegmentReader
-	dataWriter    *media.SegmentWriter
 	stream        string
 	requestID     string
 	streamID      string
