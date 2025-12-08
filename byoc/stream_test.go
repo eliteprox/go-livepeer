@@ -1077,8 +1077,6 @@ func TestStartStreamWhipIngestHandler(t *testing.T) {
 
 		bsg.updateStreamPipelineParams(stream.StreamID, newParams)
 		newParams.liveParams.kickInput(errors.New("test complete"))
-
-		bsg.stopStreamPipeline(stream.StreamID, nil)
 	})
 }
 

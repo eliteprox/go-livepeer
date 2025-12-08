@@ -230,7 +230,7 @@ func (bsg *BYOCGatewayServer) sendJobToOrch(ctx context.Context, r *http.Request
 
 	req.Header.Add(jobRequestHdr, signedReqHdr)
 	if orchToken.Price.PricePerUnit > 0 {
-		paymentHdr, err := createPayment(ctx, jobReq, &orchToken, bsg.node)
+		paymentHdr, err := bsg.createPayment(ctx, jobReq, &orchToken)
 		if err != nil {
 			clog.Errorf(ctx, "Unable to create payment err=%v", err)
 			return nil, http.StatusInternalServerError, fmt.Errorf("Unable to create payment err=%v", err)
@@ -271,12 +271,12 @@ func (bs *BYOCGatewayServer) sendPayment(ctx context.Context, orchPmtUrl, capabi
 	return resp.StatusCode, nil
 }
 
-func (bs *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequest, orchToken *core.JobToken, node *core.LivepeerNode) (string, error) {
+func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequest, orchToken *core.JobToken) (string, error) {
 	if orchToken == nil {
 		return "", errors.New("orchestrator token is nil, cannot create payment")
 	}
 	//if no sender or ticket params, no payment
-	if node.Sender == nil {
+	if bsg.node.Sender == nil {
 		return "", errors.New("no ticket sender available, cannot create payment")
 	}
 	if orchToken.TicketParams == nil {
@@ -289,7 +289,7 @@ func (bs *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobReque
 	sender := ethcommon.HexToAddress(jobReq.Sender)
 
 	orchAddr := ethcommon.BytesToAddress(orchToken.TicketParams.Recipient)
-	sessionID := node.Sender.StartSession(*pmTicketParams(orchToken.TicketParams))
+	sessionID := bsg.node.Sender.StartSession(*pmTicketParams(orchToken.TicketParams))
 
 	//setup balances and update Gateway balance to Orchestrator balance, log differences
 	//Orchestrator tracks balance paid and will not perform work if the balance it
@@ -298,7 +298,7 @@ func (bs *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobReque
 	price := big.NewRat(orchToken.Price.PricePerUnit, orchToken.Price.PixelsPerUnit)
 	cost := new(big.Rat).Mul(price, big.NewRat(int64(jobReq.Timeout), 1))
 	minBal := new(big.Rat).Mul(price, big.NewRat(60, 1)) //minimum 1 minute balance
-	balance, diffToOrch, minBalCovered, resetToZero := node.Balances.CompareAndUpdateBalance(orchAddr, core.ManifestID(jobReq.Capability), orchBal, minBal)
+	balance, diffToOrch, minBalCovered, resetToZero := compareAndUpdateBalance(bsg, orchAddr, jobReq.Capability, orchBal, minBal)
 
 	if diffToOrch.Sign() != 0 {
 		clog.Infof(ctx, "Updated balance for sender=%v capability=%v by %v to match Orchestrator reported balance %v", sender.Hex(), jobReq.Capability, diffToOrch.FloatString(3), orchBal.FloatString(3))
@@ -321,7 +321,7 @@ func (bs *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobReque
 	} else {
 		//calc ticket count
 		ticketCnt := math.Ceil(float64(jobReq.Timeout))
-		tickets, err := node.Sender.CreateTicketBatch(sessionID, int(ticketCnt))
+		tickets, err := bsg.node.Sender.CreateTicketBatch(sessionID, int(ticketCnt))
 		if err != nil {
 			clog.Errorf(ctx, "Unable to create ticket batch err=%v", err)
 			return "", err
@@ -332,7 +332,7 @@ func (bs *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobReque
 		fv := big.NewRat(tickets.FaceValue.Int64(), 1)
 		pmtTotal := new(big.Rat).Mul(fv, winProb)
 		pmtTotal = new(big.Rat).Mul(pmtTotal, big.NewRat(int64(ticketCnt), 1))
-		node.Balances.Credit(orchAddr, core.ManifestID(jobReq.Capability), pmtTotal)
+		bsg.node.Balances.Credit(orchAddr, core.ManifestID(jobReq.Capability), pmtTotal)
 		//create the payment
 		payment = &net.Payment{
 			Sender:        sender.Bytes(),
@@ -357,7 +357,7 @@ func (bs *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobReque
 		payment.TicketSenderParams = senderParams
 
 		ratPrice, _ := common.RatPriceInfo(payment.ExpectedPrice)
-		balanceForOrch := node.Balances.Balance(orchAddr, core.ManifestID(jobReq.Capability))
+		balanceForOrch := bsg.node.Balances.Balance(orchAddr, core.ManifestID(jobReq.Capability))
 		balanceForOrchStr := ""
 		if balanceForOrch != nil {
 			balanceForOrchStr = balanceForOrch.FloatString(3)
@@ -654,115 +654,4 @@ func getToken(ctx context.Context, respTimeout time.Duration, orchUrl, capabilit
 		return nil, err
 	}
 	return nil, fmt.Errorf("failed to get token from Orchestrator after %d attempts", attempt)
-}
-
-func createPayment(ctx context.Context, jobReq *JobRequest, orchToken *core.JobToken, node *core.LivepeerNode) (string, error) {
-	if orchToken == nil {
-		return "", errors.New("orchestrator token is nil, cannot create payment")
-	}
-	//if no sender or ticket params, no payment
-	if node.Sender == nil {
-		return "", errors.New("no ticket sender available, cannot create payment")
-	}
-	if orchToken.TicketParams == nil {
-		return "", errors.New("no ticket params available, cannot create payment")
-	}
-
-	var payment *net.Payment
-	createTickets := true
-	clog.Infof(ctx, "creating payment for job request %s", jobReq.Capability)
-	sender := ethcommon.HexToAddress(jobReq.Sender)
-
-	orchAddr := ethcommon.BytesToAddress(orchToken.TicketParams.Recipient)
-	sessionID := node.Sender.StartSession(*pmTicketParams(orchToken.TicketParams))
-
-	//setup balances and update Gateway balance to Orchestrator balance, log differences
-	//Orchestrator tracks balance paid and will not perform work if the balance it
-	//has is not sufficient
-	orchBal := big.NewRat(orchToken.Balance, 1)
-	price := big.NewRat(orchToken.Price.PricePerUnit, orchToken.Price.PixelsPerUnit)
-	cost := new(big.Rat).Mul(price, big.NewRat(int64(jobReq.Timeout), 1))
-	minBal := new(big.Rat).Mul(price, big.NewRat(60, 1)) //minimum 1 minute balance
-	balance, diffToOrch, minBalCovered, resetToZero := node.Balances.CompareAndUpdateBalance(orchAddr, core.ManifestID(jobReq.Capability), orchBal, minBal)
-
-	if diffToOrch.Sign() != 0 {
-		clog.Infof(ctx, "Updated balance for sender=%v capability=%v by %v to match Orchestrator reported balance %v", sender.Hex(), jobReq.Capability, diffToOrch.FloatString(3), orchBal.FloatString(3))
-	}
-	if resetToZero {
-		clog.Infof(ctx, "Reset balance to zero for to match Orchestrator reported balance sender=%v capability=%v", sender.Hex(), jobReq.Capability)
-	}
-	if minBalCovered {
-		createTickets = false
-		payment = &net.Payment{
-			Sender:        sender.Bytes(),
-			ExpectedPrice: orchToken.Price,
-		}
-	}
-	clog.V(common.DEBUG).Infof(ctx, "current balance for sender=%v capability=%v is %v, cost=%v price=%v", sender.Hex(), jobReq.Capability, balance.FloatString(3), cost.FloatString(3), price.FloatString(3))
-
-	if !createTickets {
-		clog.V(common.DEBUG).Infof(ctx, "No payment required, using balance=%v", balance.FloatString(3))
-		return "", nil
-	} else {
-		//calc ticket count
-		ticketCnt := math.Ceil(float64(jobReq.Timeout))
-		tickets, err := node.Sender.CreateTicketBatch(sessionID, int(ticketCnt))
-		if err != nil {
-			clog.Errorf(ctx, "Unable to create ticket batch err=%v", err)
-			return "", err
-		}
-
-		//record the payment
-		winProb := tickets.WinProbRat()
-		fv := big.NewRat(tickets.FaceValue.Int64(), 1)
-		pmtTotal := new(big.Rat).Mul(fv, winProb)
-		pmtTotal = new(big.Rat).Mul(pmtTotal, big.NewRat(int64(ticketCnt), 1))
-		node.Balances.Credit(orchAddr, core.ManifestID(jobReq.Capability), pmtTotal)
-		//create the payment
-		payment = &net.Payment{
-			Sender:        sender.Bytes(),
-			ExpectedPrice: orchToken.Price,
-			TicketParams:  orchToken.TicketParams,
-			ExpirationParams: &net.TicketExpirationParams{
-				CreationRound:          tickets.CreationRound,
-				CreationRoundBlockHash: tickets.CreationRoundBlockHash.Bytes(),
-			},
-		}
-
-		totalEV := big.NewRat(0, 1)
-		senderParams := make([]*net.TicketSenderParams, len(tickets.SenderParams))
-		for i := 0; i < len(tickets.SenderParams); i++ {
-			senderParams[i] = &net.TicketSenderParams{
-				SenderNonce: orchToken.LastNonce + tickets.SenderParams[i].SenderNonce,
-				Sig:         tickets.SenderParams[i].Sig,
-			}
-			totalEV = totalEV.Add(totalEV, tickets.WinProbRat())
-		}
-		orchToken.LastNonce = tickets.SenderParams[len(tickets.SenderParams)-1].SenderNonce + 1
-		payment.TicketSenderParams = senderParams
-
-		ratPrice, _ := common.RatPriceInfo(payment.ExpectedPrice)
-		balanceForOrch := node.Balances.Balance(orchAddr, core.ManifestID(jobReq.Capability))
-		balanceForOrchStr := ""
-		if balanceForOrch != nil {
-			balanceForOrchStr = balanceForOrch.FloatString(3)
-		}
-
-		clog.V(common.DEBUG).Infof(ctx, "Created new payment - capability=%v recipient=%v faceValue=%v winProb=%v price=%v numTickets=%v balance=%v",
-			jobReq.Capability,
-			tickets.Recipient.Hex(),
-			eth.FormatUnits(tickets.FaceValue, "ETH"),
-			tickets.WinProbRat().FloatString(10),
-			ratPrice.FloatString(3)+" wei/unit",
-			ticketCnt,
-			balanceForOrchStr,
-		)
-	}
-
-	data, err := proto.Marshal(payment)
-	if err != nil {
-		return "", err
-	}
-
-	return base64.StdEncoding.EncodeToString(data), nil
 }

@@ -21,6 +21,8 @@ type BYOCOrchestratorServer struct {
 	trickleBasePath string
 
 	httpMux *http.ServeMux
+
+	sharedBalMtx *sync.Mutex
 }
 
 type BYOCGatewayServer struct {
@@ -34,6 +36,7 @@ type BYOCGatewayServer struct {
 
 	StreamPipelines map[string]*BYOCStreamPipeline
 	mu              *sync.RWMutex
+	sharedBalMtx    *sync.Mutex
 }
 
 // NewBYOCServer creates a new BYOC server instance
@@ -46,6 +49,7 @@ func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, slow
 		whipServer:      whipServer,
 		whepServer:      whepServer,
 		mu:              &sync.RWMutex{},
+		sharedBalMtx:    &sync.Mutex{},
 	}
 
 	bsg.StreamPipelines = make(map[string]*BYOCStreamPipeline)
@@ -61,10 +65,18 @@ func NewBYOCOrchestratorServer(node *core.LivepeerNode, orch Orchestrator, trick
 		trickleSrv:      trickleSrv,
 		trickleBasePath: trickleBasePath,
 		httpMux:         mux,
+		sharedBalMtx:    &sync.Mutex{},
 	}
 
 	bso.registerRoutes()
 	return bso
+}
+
+func (bsg *BYOCGatewayServer) Node() *core.LivepeerNode {
+	return bsg.node
+}
+func (bsg *BYOCGatewayServer) SharedBalanceLock() *sync.Mutex {
+	return bsg.sharedBalMtx
 }
 
 func (bsg *BYOCGatewayServer) newStreamPipeline(requestID, streamID, pipeline string, streamParams byocAIRequestParams, streamRequest []byte) *BYOCStreamPipeline {
@@ -200,6 +212,13 @@ func (bs *BYOCGatewayServer) withCORS(statusCode int) http.Handler {
 		corsHeaders(w, r.Method)
 		w.WriteHeader(statusCode)
 	})
+}
+
+func (bso *BYOCOrchestratorServer) Node() *core.LivepeerNode {
+	return bso.node
+}
+func (bso *BYOCOrchestratorServer) SharedBalanceLock() *sync.Mutex {
+	return bso.sharedBalMtx
 }
 
 func (bso *BYOCOrchestratorServer) registerRoutes() {

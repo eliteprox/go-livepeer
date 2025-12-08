@@ -339,7 +339,7 @@ func (bsg *BYOCGatewayServer) sendPaymentForStream(ctx context.Context, streamID
 	}
 
 	if orch.Price.PricePerUnit > 0 {
-		pmtHdr, err := createPayment(ctx, req, newToken, bsg.node)
+		pmtHdr, err := bsg.createPayment(ctx, req, newToken)
 		if err != nil {
 			clog.Errorf(ctx, "Error processing stream payment for %s: %v", streamID, err)
 			// Continue monitoring even if payment fails

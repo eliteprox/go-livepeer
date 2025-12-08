@@ -947,13 +947,15 @@ func TestSubmitJob_MethodNotAllowed(t *testing.T) {
 
 func TestCreatePayment(t *testing.T) {
 	ctx := context.TODO()
-	node, _ := core.NewLivepeerNode(nil, "/tmp/thisdirisnotactuallyusedinthistest", nil)
+	bsg := &BYOCGatewayServer{
+		node:         mockJobLivepeerNode(),
+		sharedBalMtx: &sync.Mutex{},
+	}
+	bsg.node.Balances = core.NewAddressBalances(1 * time.Second)
+	defer bsg.node.Balances.StopCleanup()
 	mockSender := pm.MockSender{}
 	mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
-	node.Sender = &mockSender
-
-	node.Balances = core.NewAddressBalances(1 * time.Second)
-	defer node.Balances.StopCleanup()
+	bsg.node.Sender = &mockSender
 
 	jobReq := JobRequest{
 		Capability: "test-payment-cap",
@@ -985,7 +987,7 @@ func TestCreatePayment(t *testing.T) {
 	//payment with one ticket
 	jobReq.Timeout = 1
 	mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
-	payment, err := createPayment(ctx, &jobReq, &orchTocken, node)
+	payment, err := bsg.createPayment(ctx, &jobReq, &orchTocken)
 	assert.Nil(t, err)
 	pmPayment, err := base64.StdEncoding.DecodeString(payment)
 	assert.Nil(t, err)
@@ -996,7 +998,7 @@ func TestCreatePayment(t *testing.T) {
 	//test 2 tickets
 	jobReq.Timeout = 2
 	mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
-	payment, err = createPayment(ctx, &jobReq, &orchTocken, node)
+	payment, err = bsg.createPayment(ctx, &jobReq, &orchTocken)
 	assert.Nil(t, err)
 	pmPayment, err = base64.StdEncoding.DecodeString(payment)
 	assert.Nil(t, err)
@@ -1007,7 +1009,7 @@ func TestCreatePayment(t *testing.T) {
 	//test 600 tickets
 	jobReq.Timeout = 600
 	mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
-	payment, err = createPayment(ctx, &jobReq, &orchTocken, node)
+	payment, err = bsg.createPayment(ctx, &jobReq, &orchTocken)
 	assert.Nil(t, err)
 	pmPayment, err = base64.StdEncoding.DecodeString(payment)
 	assert.Nil(t, err)
@@ -1018,14 +1020,18 @@ func TestCreatePayment(t *testing.T) {
 
 func createTestPayment(capability string) (string, error) {
 	ctx := context.TODO()
-	node, _ := core.NewLivepeerNode(nil, "/tmp/thisdirisnotactuallyusedinthistest", nil)
+	bsg := &BYOCGatewayServer{
+		node:         mockJobLivepeerNode(),
+		sharedBalMtx: &sync.Mutex{},
+	}
+
 	mockSender := pm.MockSender{}
 	mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
 	mockSender.On("CreateTicketBatch", "foo", 1).Return(mockTicketBatch(1), nil).Once()
-	node.Sender = &mockSender
+	bsg.node.Sender = &mockSender
 
-	node.Balances = core.NewAddressBalances(1 * time.Second)
-	defer node.Balances.StopCleanup()
+	bsg.node.Balances = core.NewAddressBalances(1 * time.Second)
+	defer bsg.node.Balances.StopCleanup()
 
 	jobReq := JobRequest{
 		Capability: capability,
@@ -1053,7 +1059,7 @@ func createTestPayment(capability string) (string, error) {
 		},
 	}
 
-	pmt, err := createPayment(ctx, &jobReq, &orchTocken, node)
+	pmt, err := bsg.createPayment(ctx, &jobReq, &orchTocken)
 	if err != nil {
 		return "", err
 	}
@@ -1221,7 +1227,7 @@ func TestProcessPayment(t *testing.T) {
 			balanceCalled := 0
 			paymentCalled := 0
 			orch := newMockJobOrchestrator()
-			bso := &BYOCOrchestratorServer{node: orch.node, orch: orch}
+			bso := &BYOCOrchestratorServer{node: orch.node, orch: orch, sharedBalMtx: &sync.Mutex{}}
 
 			orch.node.Balances = core.NewAddressBalances(1 * time.Second)
 			defer orch.node.Balances.StopCleanup()
