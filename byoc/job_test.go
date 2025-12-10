@@ -1296,7 +1296,7 @@ func TestSetupGatewayJob(t *testing.T) {
 	req.Header.Set(jobRequestHdr, jobReqB64)
 
 	// Should succeed
-	gatewayJob, err := bsg.setupGatewayJob(context.Background(), req, false)
+	gatewayJob, err := bsg.setupGatewayJob(context.Background(), jobReqB64, "1s", "250ms", false)
 	assert.NoError(t, err)
 	assert.NotNil(t, gatewayJob)
 	assert.Equal(t, "test-capability", gatewayJob.Job.Req.Capability)
@@ -1310,15 +1310,13 @@ func TestSetupGatewayJob(t *testing.T) {
 	assert.NotEmpty(t, gatewayJob.SignedJobReq)
 
 	// Should fail with invalid base64
-	req.Header.Set(jobRequestHdr, "not-base64")
-	gatewayJob, err = bsg.setupGatewayJob(context.Background(), req, false)
+	gatewayJob, err = bsg.setupGatewayJob(context.Background(), "not-base64", "1s", "250ms", false)
 	assert.Error(t, err)
 	assert.Nil(t, gatewayJob)
 
 	// Should fail with missing orchestrators (simulate getJobOrchestrators returns empty)
-	req.Header.Set(jobRequestHdr, jobReqB64)
 	bsg.node.OrchestratorPool = newStubOrchestratorPool(node, []string{})
-	gatewayJob, err = bsg.setupGatewayJob(context.Background(), req, false)
+	gatewayJob, err = bsg.setupGatewayJob(context.Background(), jobReqB64, "1s", "250ms", false)
 	assert.Error(t, err)
 	assert.Nil(t, gatewayJob)
 }

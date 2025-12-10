@@ -46,7 +46,7 @@ func (bsg *BYOCGatewayServer) SubmitJob() http.Handler {
 
 func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 
-	gatewayJob, err := bsg.setupGatewayJob(ctx, r, false)
+	gatewayJob, err := bsg.setupGatewayJob(ctx, r.Header.Get(jobRequestHdr), r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr), false)
 	if err != nil {
 		clog.Errorf(ctx, "Error setting up job: %s", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -398,11 +398,10 @@ func updateGatewayBalance(node *core.LivepeerNode, orchToken core.JobToken, capa
 	return balance
 }
 
-func (bsg *BYOCGatewayServer) setupGatewayJob(ctx context.Context, r *http.Request, skipOrchSearch bool) (*gatewayJob, error) {
+func (bsg *BYOCGatewayServer) setupGatewayJob(ctx context.Context, jobReqHdr string, orchSearchTimeoutHdr string, orchSearchRespTimeoutHdr string, skipOrchSearch bool) (*gatewayJob, error) {
 
 	var orchs []core.JobToken
 
-	jobReqHdr := r.Header.Get(jobRequestHdr)
 	clog.Infof(ctx, "processing job request req=%v", jobReqHdr)
 	jobReq, err := bsg.verifyJobCreds(ctx, jobReqHdr, true)
 	if err != nil {
@@ -422,7 +421,7 @@ func (bsg *BYOCGatewayServer) setupGatewayJob(ctx context.Context, r *http.Reque
 	// get list of Orchestrators that can do the job if needed
 	// (e.g. stop requests don't need new list of orchestrators)
 	if !skipOrchSearch {
-		searchTimeout, respTimeout := getOrchSearchTimeouts(ctx, r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr))
+		searchTimeout, respTimeout := getOrchSearchTimeouts(ctx, orchSearchTimeoutHdr, orchSearchRespTimeoutHdr)
 		jobReq.OrchSearchTimeout = searchTimeout
 		jobReq.OrchSearchRespTimeout = respTimeout
 

@@ -35,7 +35,7 @@ func (bsg *BYOCGatewayServer) StartStream() http.Handler {
 
 		corsHeaders(w, r.Method)
 		//verify request, get orchestrators available and sign request
-		gatewayJob, err := bsg.setupGatewayJob(ctx, r, false)
+		gatewayJob, err := bsg.setupGatewayJob(ctx, r.Header.Get(jobRequestHdr), "", "", false)
 		if err != nil {
 			clog.Errorf(ctx, "Error setting up job: %s", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -84,7 +84,7 @@ func (bsg *BYOCGatewayServer) StopStream() http.Handler {
 		bsg.stopStreamPipeline(streamId, nil)
 		bsg.removeStreamPipeline(streamId)
 		glog.Infof("Sending stop request to Orchestrator %s", orch.ServiceAddr)
-		stopJob, err := bsg.setupGatewayJob(ctx, r, true)
+		stopJob, err := bsg.setupGatewayJob(ctx, r.Header.Get(jobRequestHdr), r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr), true)
 		if err != nil {
 			clog.Errorf(ctx, "Error setting up stop job: %s", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -208,6 +208,7 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 		}
 		//something caused the Orch to stop performing, try to get the error and move to next Orchestrator
 		<-perOrchCtx.Done()
+
 		err = context.Cause(perOrchCtx)
 		if errors.Is(err, context.Canceled) {
 			// this happens if parent ctx was cancelled without a CancelCause
@@ -238,12 +239,11 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 		clog.Infof(ctx, "Retrying stream with a different orchestrator err=%v", err.Error())
 
 		params.liveParams.sendErrorEvent(err)
+	}
 
-		//if there is ingress input then force off
-		if params.liveParams.kickInput != nil {
-			params.liveParams.kickInput(err)
-		}
-
+	//if there is ingress input then force off
+	if params.liveParams.kickInput != nil {
+		params.liveParams.kickInput(err)
 	}
 
 	//all orchestrators tried or stream ended, stop the stream
@@ -921,7 +921,7 @@ func (bsg *BYOCGatewayServer) UpdateStream() http.Handler {
 			return
 		}
 
-		updateJob, err := bsg.setupGatewayJob(ctx, r, true)
+		updateJob, err := bsg.setupGatewayJob(ctx, r.Header.Get(jobRequestHdr), "", "", true)
 		if err != nil {
 			clog.Errorf(ctx, "Error setting up update job: %s", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
