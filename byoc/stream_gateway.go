@@ -78,32 +78,7 @@ func (bsg *BYOCGatewayServer) StopStream() http.Handler {
 			http.Error(w, "Stream not found", http.StatusNotFound)
 			return
 		}
-
-		orch := stream.streamParams.liveParams.orchToken
 		glog.Infof("Pipeline found, stopping %s", streamId)
-		bsg.stopStreamPipeline(streamId, nil)
-		bsg.removeStreamPipeline(streamId)
-		glog.Infof("Sending stop request to Orchestrator %s", orch.ServiceAddr)
-		stopJob, err := bsg.setupGatewayJob(ctx, r.Header.Get(jobRequestHdr), r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr), true)
-		if err != nil {
-			clog.Errorf(ctx, "Error setting up stop job: %s", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		stopJob.sign() //no changes to make, sign job
-		//setup sender
-		jobSender, err := getJobSender(ctx, bsg.node)
-		if err != nil {
-			clog.Errorf(ctx, "Error getting job sender: %v", err)
-			return
-		}
-
-		newToken, err := getToken(ctx, getNewTokenTimeout, orch.ServiceAddr, stopJob.Job.Req.Capability, jobSender.Addr, jobSender.Sig)
-		if err != nil {
-			clog.Errorf(ctx, "Error converting session to token: %s", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -113,17 +88,68 @@ func (bsg *BYOCGatewayServer) StopStream() http.Handler {
 		}
 		defer r.Body.Close()
 
-		resp, code, err := bsg.sendJobToOrch(ctx, r, stopJob.Job.Req, stopJob.SignedJobReq, *newToken, "/ai/stream/stop", body)
-		if err != nil {
-			clog.Errorf(ctx, "Error sending job to orchestrator: %s", err)
-			http.Error(w, err.Error(), code)
-			return
+		//stop on orchestrator first
+		orch := stream.streamParams.liveParams.orchToken
+		respBody, orchErr := bsg.sendStopStreamToOrch(ctx, streamId, stream.streamParams.liveParams.pipeline, body, orch)
+		if orchErr != nil {
+			clog.Errorf(ctx, "Error sending stop request to orchestrator: %s", orchErr)
 		}
 
+		//stop and remove on gateway
+		bsg.stopStreamPipeline(streamId, nil)
+		bsg.removeStreamPipeline(streamId)
+
 		w.WriteHeader(http.StatusOK)
-		io.Copy(w, resp.Body)
-		return
+		w.Write(respBody)
 	})
+}
+
+func (bsg *BYOCGatewayServer) sendStopStreamToOrch(ctx context.Context, streamID string, capability string, body []byte, orch core.JobToken) ([]byte, error) {
+	glog.Infof("Sending stop request to Orchestrator %s", orch.ServiceAddr)
+	jobReqDet := JobRequestDetails{StreamId: streamID}
+	jobReqDetStr, err := json.Marshal(jobReqDet)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling job request details: %w", err)
+	}
+	stopJob := &gatewayJob{
+		Job: &orchJob{
+			Req: &JobRequest{
+				Capability: capability,
+				Request:    string(jobReqDetStr),
+				Timeout:    10,
+			},
+		},
+		node: bsg.node,
+	}
+	stopJob.sign()
+
+	jobSender, err := getJobSender(ctx, bsg.node)
+	if err != nil {
+		return nil, fmt.Errorf("error getting job sender: %w", err)
+	}
+
+	newToken, err := getToken(ctx, getNewTokenTimeout, orch.ServiceAddr, stopJob.Job.Req.Capability, jobSender.Addr, jobSender.Sig)
+	if err != nil {
+		return nil, fmt.Errorf("error converting session to token: %w", err)
+	}
+
+	// Send the stop request
+	resp, code, err := bsg.sendJobToOrch(ctx, nil, stopJob.Job.Req, stopJob.SignedJobReq, *newToken, "/ai/stream/stop", body)
+	if err != nil {
+		return nil, fmt.Errorf("error sending stop job to orchestrator: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading stop response body: %w", err)
+	}
+
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("orchestrator returned status %d", code)
+	}
+
+	clog.Infof(ctx, "Sent stop request to Orchestrator %s for stream %s", orch.ServiceAddr, streamID)
+	return body, nil
 }
 
 func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
@@ -208,8 +234,13 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 		}
 		//something caused the Orch to stop performing, try to get the error and move to next Orchestrator
 		<-perOrchCtx.Done()
-
 		err = context.Cause(perOrchCtx)
+
+		_, err = bsg.sendStopStreamToOrch(ctx, streamID, params.liveParams.pipeline, []byte(err.Error()), params.liveParams.orchToken)
+		if err != nil {
+			clog.Errorf(ctx, "Error sending stop to orchestrator: %s", err)
+		}
+
 		if errors.Is(err, context.Canceled) {
 			// this happens if parent ctx was cancelled without a CancelCause
 			// or if passing `nil` as a CancelCause
