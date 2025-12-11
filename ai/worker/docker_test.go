@@ -335,6 +335,14 @@ func TestDockerManager_getContainerImageName(t *testing.T) {
 			expectError:   false,
 		},
 		{
+			name:          "live-video-to-video with cached attention sd15 modelID",
+			setup:         func(dockerManager *DockerManager, mockDockerClient *MockDockerClient) {},
+			pipeline:      "live-video-to-video",
+			modelID:       "streamdiffusion-sd15-v2v",
+			expectedImage: "livepeer/ai-runner:live-app-streamdiffusion-sd15-v2v",
+			expectError:   false,
+		},
+		{
 			name:        "live-video-to-video with invalid modelID",
 			setup:       func(dockerManager *DockerManager, mockDockerClient *MockDockerClient) {},
 			pipeline:    "live-video-to-video",
@@ -431,6 +439,15 @@ func TestDockerManager_getContainerImageName(t *testing.T) {
 			pipeline:      "live-video-to-video",
 			modelID:       "comfyui",
 			expectedImage: "livepeer/ai-runner:live-app-comfyui",
+			expectError:   false,
+		},
+		{
+			name: "scope live image",
+			setup: func(dockerManager *DockerManager, mockDockerClient *MockDockerClient) {
+			},
+			pipeline:      "live-video-to-video",
+			modelID:       "scope",
+			expectedImage: "livepeer/ai-runner:live-app-scope",
 			expectError:   false,
 		},
 	}

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -946,76 +947,79 @@ func TestSubmitJob_MethodNotAllowed(t *testing.T) {
 }
 
 func TestCreatePayment(t *testing.T) {
-	ctx := context.TODO()
-	bsg := &BYOCGatewayServer{
-		node:         mockJobLivepeerNode(),
-		sharedBalMtx: &sync.Mutex{},
-	}
-	bsg.node.Balances = core.NewAddressBalances(1 * time.Second)
-	defer bsg.node.Balances.StopCleanup()
-	mockSender := pm.MockSender{}
-	mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
-	bsg.node.Sender = &mockSender
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.TODO()
+		bsg := &BYOCGatewayServer{
+			node:         mockJobLivepeerNode(),
+			sharedBalMtx: &sync.Mutex{},
+		}
+		mockSender := pm.MockSender{}
+		mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
+		bsg.node.Sender = &mockSender
 
-	jobReq := JobRequest{
-		Capability: "test-payment-cap",
-	}
-	sender := core.JobSender{
-		Addr: "0x1111111111111111111111111111111111111111",
-		Sig:  "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-	}
+		bsg.node.Balances = core.NewAddressBalances(5 * time.Second)
+		defer bsg.node.Balances.StopCleanup()
 
-	orchTocken := core.JobToken{
-		TicketParams: &net.TicketParams{
-			Recipient:         ethcommon.HexToAddress("0x1111111111111111111111111111111111111111").Bytes(),
-			FaceValue:         big.NewInt(1000).Bytes(),
-			WinProb:           big.NewInt(1).Bytes(),
-			RecipientRandHash: []byte("hash"),
-			Seed:              big.NewInt(1234).Bytes(),
-			ExpirationBlock:   big.NewInt(100000).Bytes(),
-		},
-		SenderAddress: &sender,
-		Balance:       0,
-		Price: &net.PriceInfo{
-			PricePerUnit:  10,
-			PixelsPerUnit: 1,
-		},
-	}
+		jobReq := JobRequest{
+			Capability: "test-payment-cap",
+		}
+		sender := core.JobSender{
+			Addr: "0x1111111111111111111111111111111111111111",
+			Sig:  "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+		}
 
-	var pmTickets net.Payment
+		orchTocken := core.JobToken{
+			TicketParams: &net.TicketParams{
+				Recipient:         ethcommon.HexToAddress("0x1111111111111111111111111111111111111111").Bytes(),
+				FaceValue:         big.NewInt(1000).Bytes(),
+				WinProb:           big.NewInt(1).Bytes(),
+				RecipientRandHash: []byte("hash"),
+				Seed:              big.NewInt(1234).Bytes(),
+				ExpirationBlock:   big.NewInt(100000).Bytes(),
+			},
+			SenderAddress: &sender,
+			Balance:       0,
+			Price: &net.PriceInfo{
+				PricePerUnit:  10,
+				PixelsPerUnit: 1,
+			},
+		}
 
-	//payment with one ticket
-	jobReq.Timeout = 1
-	mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
-	payment, err := bsg.createPayment(ctx, &jobReq, &orchTocken)
-	assert.Nil(t, err)
-	pmPayment, err := base64.StdEncoding.DecodeString(payment)
-	assert.Nil(t, err)
-	err = proto.Unmarshal(pmPayment, &pmTickets)
-	assert.Nil(t, err)
-	assert.Equal(t, 1, len(pmTickets.TicketSenderParams))
+		var pmTickets net.Payment
 
-	//test 2 tickets
-	jobReq.Timeout = 2
-	mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
-	payment, err = bsg.createPayment(ctx, &jobReq, &orchTocken)
-	assert.Nil(t, err)
-	pmPayment, err = base64.StdEncoding.DecodeString(payment)
-	assert.Nil(t, err)
-	err = proto.Unmarshal(pmPayment, &pmTickets)
-	assert.Nil(t, err)
-	assert.Equal(t, 2, len(pmTickets.TicketSenderParams))
+		//payment with one ticket
+		jobReq.Timeout = 1
+		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
+		payment, err := bsg.createPayment(ctx, &jobReq, orchTocken)
+		assert.Nil(t, err)
+		pmPayment, err := base64.StdEncoding.DecodeString(payment)
+		assert.Nil(t, err)
+		err = proto.Unmarshal(pmPayment, &pmTickets)
+		assert.Nil(t, err)
+		assert.Equal(t, 1, len(pmTickets.TicketSenderParams))
 
-	//test 600 tickets
-	jobReq.Timeout = 600
-	mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
-	payment, err = bsg.createPayment(ctx, &jobReq, &orchTocken)
-	assert.Nil(t, err)
-	pmPayment, err = base64.StdEncoding.DecodeString(payment)
-	assert.Nil(t, err)
-	err = proto.Unmarshal(pmPayment, &pmTickets)
-	assert.Nil(t, err)
-	assert.Equal(t, 600, len(pmTickets.TicketSenderParams))
+		//test 2 tickets
+		jobReq.Timeout = 2
+		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
+		payment, err = bsg.createPayment(ctx, &jobReq, orchTocken)
+		assert.Nil(t, err)
+		pmPayment, err = base64.StdEncoding.DecodeString(payment)
+		assert.Nil(t, err)
+		err = proto.Unmarshal(pmPayment, &pmTickets)
+		assert.Nil(t, err)
+		assert.Equal(t, 2, len(pmTickets.TicketSenderParams))
+
+		//test 600 tickets
+		jobReq.Timeout = 600
+		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
+		payment, err = bsg.createPayment(ctx, &jobReq, orchTocken)
+		assert.Nil(t, err)
+		pmPayment, err = base64.StdEncoding.DecodeString(payment)
+		assert.Nil(t, err)
+		err = proto.Unmarshal(pmPayment, &pmTickets)
+		assert.Nil(t, err)
+		assert.Equal(t, 600, len(pmTickets.TicketSenderParams))
+	})
 }
 
 func createTestPayment(capability string) (string, error) {
