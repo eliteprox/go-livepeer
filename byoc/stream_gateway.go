@@ -274,7 +274,11 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 
 	//if there is ingress input then force off
 	if params.liveParams.kickInput != nil {
-		params.liveParams.kickInput(err)
+		exitErr = errors.New("no orchestrators available, ending stream")
+		clog.Infof(ctx, "Kicking input stream err=%v", exitErr)
+		params.liveParams.kickInput(exitErr)
+	} else {
+		clog.Infof(ctx, "No input stream to kick")
 	}
 
 	//all orchestrators tried or stream ended, stop the stream
