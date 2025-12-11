@@ -121,7 +121,6 @@ func (bsg *BYOCGatewayServer) streamPipelineExists(streamId string) bool {
 func (bsg *BYOCGatewayServer) stopStreamPipeline(streamId string, err error) {
 	p, err := bsg.streamPipeline(streamId)
 	if err == nil {
-		glog.Info("found pipeline, stopping")
 		p.OutCond.Broadcast()
 		if p.ControlPub != nil {
 			if err := p.ControlPub.Close(); err != nil {
@@ -131,7 +130,6 @@ func (bsg *BYOCGatewayServer) stopStreamPipeline(streamId string, err error) {
 				p.StopControl()
 			}
 		}
-		glog.Info("canceling stream")
 		p.streamCancel(err)
 		p.Closed = true
 	}

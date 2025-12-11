@@ -313,6 +313,8 @@ func (bsg *BYOCGatewayServer) monitorStream(streamId string) {
 		select {
 		case <-streamCtx.Done():
 			clog.Infof(ctx, "Stream %s stopped, ending monitoring", streamId)
+			//send stop to orchestrator because stream is done
+			bsg.sendStopStreamToOrch(context.Background(), streamId, stream.streamParams.liveParams.pipeline, []byte("stream ended"), stream.streamParams.liveParams.orchToken)
 			return
 		case <-pmtTicker.C:
 			if _, err := bsg.streamPipeline(streamId); err != nil {
