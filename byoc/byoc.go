@@ -31,8 +31,7 @@ type BYOCGatewayServer struct {
 	whipServer *media.WHIPServer
 	whepServer *media.WHEPServer
 
-	statusStore     StatusStore
-	slowOrchChecker SlowOrchChecker
+	statusStore StatusStore
 
 	StreamPipelines map[string]*BYOCStreamPipeline
 	mu              *sync.RWMutex
@@ -40,16 +39,15 @@ type BYOCGatewayServer struct {
 }
 
 // NewBYOCServer creates a new BYOC server instance
-func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, slowOrchChecker SlowOrchChecker, whipServer *media.WHIPServer, whepServer *media.WHEPServer, mux *http.ServeMux) *BYOCGatewayServer {
+func NewBYOCGatewayServer(node *core.LivepeerNode, statusStore StatusStore, whipServer *media.WHIPServer, whepServer *media.WHEPServer, mux *http.ServeMux) *BYOCGatewayServer {
 	bsg := &BYOCGatewayServer{
-		node:            node,
-		httpMux:         mux,
-		statusStore:     statusStore,
-		slowOrchChecker: slowOrchChecker,
-		whipServer:      whipServer,
-		whepServer:      whepServer,
-		mu:              &sync.RWMutex{},
-		sharedBalMtx:    &sync.Mutex{},
+		node:         node,
+		httpMux:      mux,
+		statusStore:  statusStore,
+		whipServer:   whipServer,
+		whepServer:   whepServer,
+		mu:           &sync.RWMutex{},
+		sharedBalMtx: &sync.Mutex{},
 	}
 
 	bsg.StreamPipelines = make(map[string]*BYOCStreamPipeline)

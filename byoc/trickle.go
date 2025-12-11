@@ -67,7 +67,7 @@ func (bsg *BYOCGatewayServer) startTricklePublish(ctx context.Context, url *url.
 	//	clog.Warningf(ctx, "No price info found from Orchestrator, Gateway will not send payments for the video processing")
 	//}
 
-	slowOrchChecker := bsg.slowOrchChecker
+	slowOrchChecker := &SlowOrchChecker{}
 
 	firstSegment := true
 

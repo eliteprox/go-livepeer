@@ -75,12 +75,6 @@ type OrchestratorSwapper interface {
 	checkSwap(ctx context.Context) error
 }
 
-type SlowOrchChecker interface {
-	BeginSegment() (int, bool)
-	EndSegment()
-	GetCount() int
-}
-
 type BYOCStreamPipeline struct {
 	RequestID    string
 	StreamID     string
@@ -207,7 +201,8 @@ type byocAIRequestParams struct {
 	node *core.LivepeerNode
 	os   drivers.OSSession
 
-	liveParams        *byocLiveRequestParams
+	liveParams *byocLiveRequestParams
+
 	inputStreamExists func(streamId string) bool
 }
 

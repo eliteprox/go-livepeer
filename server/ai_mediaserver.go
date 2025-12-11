@@ -124,7 +124,7 @@ func startAIMediaServer(ctx context.Context, ls *LivepeerServer) error {
 
 	media.StartFileCleanup(ctx, ls.LivepeerNode.WorkDir)
 
-	ls.byocSrv = byoc.NewBYOCGatewayServer(ls.LivepeerNode, &StreamStatusStore, &SlowOrchChecker{}, whipServer, whepServer, ls.HTTPMux)
+	ls.byocSrv = byoc.NewBYOCGatewayServer(ls.LivepeerNode, &StreamStatusStore, whipServer, whepServer, ls.HTTPMux)
 
 	startHearbeats(ctx, ls.LivepeerNode)
 	return nil
