@@ -378,7 +378,7 @@ func (bsg *BYOCGatewayServer) ffmpegOutput(ctx context.Context, outputUrl string
 
 		// we receive opus by default, but re-encode to AAC for non-local outputs
 		acodec := "copy"
-		if !strings.Contains(outputUrl, params.liveParams.localRTMPPrefix) {
+		if params.liveParams.localRTMPPrefix != "" && !strings.Contains(outputUrl, params.liveParams.localRTMPPrefix) {
 			acodec = "libfdk_aac"
 		}
 
