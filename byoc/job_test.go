@@ -968,11 +968,14 @@ func TestCreatePayment(t *testing.T) {
 			Sig:  "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
 		}
 
+		//match to pm maxWinProb
+		maxWinProb := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+		winProb10 := new(big.Int).Div(maxWinProb, big.NewInt(10))
 		orchTocken := core.JobToken{
 			TicketParams: &net.TicketParams{
 				Recipient:         ethcommon.HexToAddress("0x1111111111111111111111111111111111111111").Bytes(),
 				FaceValue:         big.NewInt(1000).Bytes(),
-				WinProb:           big.NewInt(1).Bytes(),
+				WinProb:           winProb10.Bytes(),
 				RecipientRandHash: []byte("hash"),
 				Seed:              big.NewInt(1234).Bytes(),
 				ExpirationBlock:   big.NewInt(100000).Bytes(),
@@ -980,7 +983,7 @@ func TestCreatePayment(t *testing.T) {
 			SenderAddress: &sender,
 			Balance:       0,
 			Price: &net.PriceInfo{
-				PricePerUnit:  10,
+				PricePerUnit:  100,
 				PixelsPerUnit: 1,
 			},
 		}
@@ -988,8 +991,7 @@ func TestCreatePayment(t *testing.T) {
 		var pmTickets net.Payment
 
 		//payment with one ticket
-		jobReq.Timeout = 1
-		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
+		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(1), nil).Once()
 		payment, err := bsg.createPayment(ctx, &jobReq, &orchTocken)
 		assert.Nil(t, err)
 		pmPayment, err := base64.StdEncoding.DecodeString(payment)
@@ -999,8 +1001,7 @@ func TestCreatePayment(t *testing.T) {
 		assert.Equal(t, 1, len(pmTickets.TicketSenderParams))
 
 		//test 2 tickets
-		jobReq.Timeout = 2
-		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
+		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(2), nil).Once()
 		payment, err = bsg.createPayment(ctx, &jobReq, &orchTocken)
 		assert.Nil(t, err)
 		pmPayment, err = base64.StdEncoding.DecodeString(payment)
@@ -1011,7 +1012,8 @@ func TestCreatePayment(t *testing.T) {
 
 		//test 600 tickets
 		jobReq.Timeout = 600
-		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(jobReq.Timeout), nil).Once()
+		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(600), nil).Once()
+		orchTocken.Price.PricePerUnit = 6000
 		payment, err = bsg.createPayment(ctx, &jobReq, &orchTocken)
 		assert.Nil(t, err)
 		pmPayment, err = base64.StdEncoding.DecodeString(payment)
