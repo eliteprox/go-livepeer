@@ -94,7 +94,7 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 	orchBal := big.NewRat(orchToken.Balance, 1)
 	price := big.NewRat(orchToken.Price.PricePerUnit, orchToken.Price.PixelsPerUnit)
 	cost := new(big.Rat).Mul(price, big.NewRat(int64(jobReq.Timeout), 1))
-	minBal := new(big.Rat).Mul(price, big.NewRat(60, 1)) //minimum 1 minute balance
+	minBal := new(big.Rat).Mul(price, big.NewRat(120, 1)) //minimum 2 minute balance, Orchestrator requires 1 minute.  Use 2 to have a buffer.
 	balance, diffToOrch, minBalCovered, resetToZero := compareAndUpdateBalance(bsg, orchAddr, jobReq.Capability, orchBal, minBal)
 
 	if diffToOrch.Sign() != 0 {
