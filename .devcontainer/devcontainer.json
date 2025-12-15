@@ -1,0 +1,49 @@
+{
+    "name": "go-livepeer-dev",
+    "build": {
+        "context": "..",
+        "dockerfile": "Dockerfile"
+    },
+    "runArgs": [
+        "--gpus=all",
+        "--network=host",
+        "--add-host=host.docker.internal:host-gateway"
+    ],
+    "containerEnv": {
+        "NVIDIA_VISIBLE_DEVICES": "all",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "LP_DATA_DIR": "/root/.lpData",
+        "LP_DATA_GATEWAY_DIR": "/root/.lpDataGateway"
+    },
+    "mounts": [
+        "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+        "source=${localEnv:HOME}/.lpData,target=/root/.lpData,type=bind",
+        "source=${localEnv:HOME}/.lpDataGateway,target=/root/.lpDataGateway,type=bind"
+    ],
+    "workspaceFolder": "/workspaces/go-livepeer",
+    "postCreateCommand": "go mod download",
+    "forwardPorts": [
+        5937,
+        7280,
+        8890,
+        1935,
+        9995,
+        9092
+    ],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "go.useLanguageServer": true,
+                "go.gopath": "/go",
+                "go.toolsManagement.autoUpdate": true,
+                "go.buildFlags": [
+                    "-tags=mainnet,experimental"
+                ]
+            },
+            "extensions": [
+                "golang.Go",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    }
+}

@@ -19,6 +19,13 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
 
 ### Configuration Files
 
+The debug configurations below assume two shared data roots that work both locally and inside the devcontainer:
+
+-   `LP_DATA_DIR` → defaults to `${env:HOME}/.lpData` (models, configs, transcoding options)
+-   `LP_DATA_GATEWAY_DIR` → defaults to `${env:HOME}/.lpDataGateway` (secondary gateway data)
+
+The devcontainer mounts your host `${HOME}/.lpData` and `${HOME}/.lpDataGateway` into the container and pre-sets these variables, so the same launch configs run unchanged in either environment.
+
 <details>
 <summary>Launch.json (transcoding)</summary>
 
@@ -91,9 +98,13 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-ldflags=-extldflags=-lm", // Fix missing symbol error.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-gateway",
-        "-transcodingOptions=${env:HOME}/.lpData/offchain/transcodingOptions.json",
+        "-transcodingOptions=${env:LP_DATA_DIR}/offchain/transcodingOptions.json",
         "-orchAddr=0.0.0.0:8935",
         "-httpAddr=0.0.0.0:9935",
         "-v",
@@ -163,9 +174,13 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-tags=mainnet,experimental -ldflags=-extldflags=-lm", // Fix missing symbol error and enable mainnet.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-gateway",
-        "-transcodingOptions=${env:HOME}/.lpData/offchain/transcodingOptions.json",
+        "-transcodingOptions=${env:LP_DATA_DIR}/offchain/transcodingOptions.json",
         "-orchAddr=0.0.0.0:8935",
         "-httpAddr=0.0.0.0:9935",
         "-v",
@@ -223,14 +238,18 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-ldflags=-extldflags=-lm", // Fix missing symbol error.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-orchestrator",
         "-aiWorker",
         "-serviceAddr=0.0.0.0:8935",
         "-v=6",
         "-nvidia=all",
-        "-aiModels=${env:HOME}/.lpData/cfg/aiModels.json",
-        "-aiModelsDir=${env:HOME}/.lpData/models"
+        "-aiModels=${env:LP_DATA_DIR}/cfg/aiModels.json",
+        "-aiModelsDir=${env:LP_DATA_DIR}/models"
       ]
     },
     {
@@ -254,14 +273,18 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-ldflags='-extldflags=-lm -X github.com/livepeer/go-livepeer/core.LivepeerVersion=0.0.0'", // Fix missing symbol and version mismatch errors.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-aiWorker",
         "-orchSecret=orchSecret",
         "-orchAddr=0.0.0.0:8935",
         "-v=6",
         "-nvidia=all",
-        "-aiModels=${env:HOME}/.lpData/cfg/aiModels.json",
-        "-aiModelsDir=${env:HOME}/.lpData/models"
+        "-aiModels=${env:LP_DATA_DIR}/cfg/aiModels.json",
+        "-aiModelsDir=${env:LP_DATA_DIR}/models"
       ]
     },
     {
@@ -271,9 +294,13 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-ldflags=-extldflags=-lm", // Fix missing symbol error.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-gateway",
-        "-datadir=${env:HOME}/.lpData2",
+        "-datadir=${env:LP_DATA_GATEWAY_DIR}",
         "-orchAddr=0.0.0.0:8935",
         "-httpAddr=0.0.0.0:9935",
         "-v",
@@ -288,6 +315,10 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-tags=mainnet,experimental -ldflags=-extldflags=-lm", // Fix missing symbol error and enable mainnet.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-orchestrator",
         "-aiWorker",
@@ -295,8 +326,8 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
         "-serviceAddr=0.0.0.0:8935",
         "-v=6",
         "-nvidia=all",
-        "-aiModels=${env:HOME}/.lpData/cfg/aiModels.json",
-        "-aiModelsDir=${env:HOME}/.lpData/models",
+        "-aiModels=${env:LP_DATA_DIR}/cfg/aiModels.json",
+        "-aiModelsDir=${env:LP_DATA_DIR}/models",
         "-network=arbitrum-one-mainnet",
         "-ethUrl=https://arb1.arbitrum.io/rpc",
         "-ethPassword=<ETH_SECRET>",
@@ -332,14 +363,18 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-tags=mainnet,experimental -ldflags='-extldflags=-lm -X github.com/livepeer/go-livepeer/core.LivepeerVersion=0.0.0'", // Fix missing symbol error, version mismatch error and enable mainnet.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-aiWorker",
         "-orchSecret=orchSecret",
         "-orchAddr=0.0.0.0:8935",
         "-v=6",
         "-nvidia=all",
-        "-aiModels=${env:HOME}/.lpData/cfg/aiModels.json",
-        "-aiModelsDir=${env:HOME}/.lpData/models"
+        "-aiModels=${env:LP_DATA_DIR}/cfg/aiModels.json",
+        "-aiModelsDir=${env:LP_DATA_DIR}/models"
       ]
     },
     {
@@ -349,10 +384,14 @@ To debug the code, it is recommended to use [Visual Studio Code](https://code.vi
       "mode": "debug",
       "program": "cmd/livepeer",
       "buildFlags": "-tags=mainnet,experimental -ldflags=-extldflags=-lm", // Fix missing symbol error and enable mainnet.
+      "env": {
+        "LP_DATA_DIR": "${env:HOME}/.lpData",
+        "LP_DATA_GATEWAY_DIR": "${env:HOME}/.lpDataGateway"
+      },
       "args": [
         "-gateway",
         "-aiServiceRegistry",
-        "-datadir=${env:HOME}/.lpData2",
+        "-datadir=${env:LP_DATA_GATEWAY_DIR}",
         "-orchAddr=0.0.0.0:8935",
         "-httpAddr=0.0.0.0:9935",
         "-v",
