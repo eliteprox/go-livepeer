@@ -91,6 +91,13 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 	BroadcastCfg.SetMaxPrice(autoPrice)
 	defer BroadcastCfg.SetMaxPrice(nil) // Clean up
 
+	// Set a capability-specific price (lower than max price)
+	capability1 := core.Capability_LiveVideoToVideo
+	modelID1 := "livepeer/model1"
+	capMaxPrice := core.NewFixedPrice(big.NewRat(200, 1))
+	BroadcastCfg.SetCapabilityMaxPrice(capability1, modelID1, capMaxPrice)
+	defer BroadcastCfg.SetCapabilityMaxPrice(capability1, modelID1, nil) // Clean up
+
 	baseOrchInfo := &net.OrchestratorInfo{
 		Address:   ethcommon.HexToAddress("0x0000000000000000000000000000000000000001").Bytes(),
 		PriceInfo: &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1},
@@ -262,6 +269,25 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 			wantStatus: HTTPStatusPriceExceeded,
 			wantMsg:    "orchestrator price",
 		},
+		{
+			name: "orchestrator price exceeds per-capability max price",
+			req: func() RemotePaymentRequest {
+				oInfo := proto.Clone(baseOrchInfo).(*net.OrchestratorInfo)
+				// Set orchestrator price above per-capability max (200) but below global max (500)
+				oInfo.PriceInfo = &net.PriceInfo{PricePerUnit: 300, PixelsPerUnit: 1}
+				constraints := core.NewCapabilities(nil, nil)
+				caps := newAICapabilities(capability1, modelID1, true, constraints).ToNetCapabilities()
+				capsBlob, err := proto.Marshal(caps)
+				require.NoError(err)
+				return RemotePaymentRequest{
+					Orchestrator: makeOrchBlob(oInfo),
+					InPixels:     1,
+					Capabilities: capsBlob,
+				}
+			}(),
+			wantStatus: HTTPStatusPriceExceeded,
+			wantMsg:    "orchestrator price",
+		},
 	}
 
 	for _, tt := range tests {
@@ -405,9 +431,16 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	node.Sender = newMockSender(t, nil)
 	ls := &LivepeerServer{LivepeerNode: node}
 
+	// Set a global max price; initial request price is below it.
+	maxPrice := big.NewRat(200, 1)
+	autoPrice, err := core.NewAutoConvertedPrice("", maxPrice, nil)
+	require.NoError(err)
+	BroadcastCfg.SetMaxPrice(autoPrice)
+	defer BroadcastCfg.SetMaxPrice(nil)
+
 	oInfo := &net.OrchestratorInfo{
 		Address:   ethClient.addr.Bytes(),
-		PriceInfo: &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1},
+		PriceInfo: &net.PriceInfo{PricePerUnit: 150, PixelsPerUnit: 1},
 		TicketParams: &net.TicketParams{
 			Recipient: pm.RandAddress().Bytes(),
 		},
@@ -444,8 +477,51 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	require.NotEmpty(state.Balance)
 	require.False(state.LastUpdate.IsZero())
 
-	_, err = base64.StdEncoding.DecodeString(resp.Payment)
+	paymentBytes, err := base64.StdEncoding.DecodeString(resp.Payment)
 	require.NoError(err)
+	var payment net.Payment
+	require.NoError(proto.Unmarshal(paymentBytes, &payment))
+	require.NotNil(payment.ExpectedPrice)
+	require.EqualValues(oInfo.PriceInfo.PricePerUnit, payment.ExpectedPrice.PricePerUnit)
+	require.EqualValues(oInfo.PriceInfo.PixelsPerUnit, payment.ExpectedPrice.PixelsPerUnit)
+
 	_, err = base64.StdEncoding.DecodeString(resp.SegCreds)
 	require.NoError(err)
+
+	// Per-capability max price higher than global max should allow the request.
+	cap := core.Capability_LiveVideoToVideo
+	modelID := "livepeer/model-high"
+	capMaxPrice := core.NewFixedPrice(big.NewRat(500, 1))
+	BroadcastCfg.SetCapabilityMaxPrice(cap, modelID, capMaxPrice)
+	defer BroadcastCfg.SetCapabilityMaxPrice(cap, modelID, nil)
+
+	caps := newAICapabilities(cap, modelID, true, core.NewCapabilities(nil, nil)).ToNetCapabilities()
+	capsBlob, err := proto.Marshal(caps)
+	require.NoError(err)
+
+	oInfo.PriceInfo = &net.PriceInfo{PricePerUnit: 300, PixelsPerUnit: 1}
+	orchBlob, err = proto.Marshal(oInfo)
+	require.NoError(err)
+
+	reqBody, err = json.Marshal(RemotePaymentRequest{
+		Orchestrator: orchBlob,
+		InPixels:     1,
+		Capabilities: capsBlob,
+	})
+	require.NoError(err)
+
+	req = httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(reqBody))
+	rr = httptest.NewRecorder()
+
+	ls.GenerateLivePayment(rr, req)
+	require.Equal(http.StatusOK, rr.Code)
+	var capResp RemotePaymentResponse
+	require.NoError(json.NewDecoder(rr.Body).Decode(&capResp))
+	capPaymentBytes, err := base64.StdEncoding.DecodeString(capResp.Payment)
+	require.NoError(err)
+	var capPayment net.Payment
+	require.NoError(proto.Unmarshal(capPaymentBytes, &capPayment))
+	require.NotNil(capPayment.ExpectedPrice)
+	require.EqualValues(oInfo.PriceInfo.PricePerUnit, capPayment.ExpectedPrice.PricePerUnit)
+	require.EqualValues(oInfo.PriceInfo.PixelsPerUnit, capPayment.ExpectedPrice.PixelsPerUnit)
 }

@@ -340,16 +340,6 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Validate orchestrator price against configured max price
-	orchPrice := new(big.Rat).SetFrac64(priceInfo.PricePerUnit, priceInfo.PixelsPerUnit)
-	maxPrice := BroadcastCfg.GetCapabilitiesMaxPrice(streamParams.Capabilities)
-	if maxPrice != nil && orchPrice.Cmp(maxPrice) > 0 {
-		err := fmt.Errorf("orchestrator price %v exceeds maximum price %v", orchPrice.FloatString(3), maxPrice.FloatString(3))
-		clog.Warningf(ctx, "Rejecting payment request: %v", err)
-		respondJsonError(ctx, w, err, HTTPStatusPriceExceeded)
-		return
-	}
-
 	pixels := req.InPixels
 	if req.Type == RemoteType_LiveVideoToVideo {
 		info := defaultSegInfo
@@ -370,6 +360,16 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	if pixels <= 0 {
 		err = errors.New("missing pixels or job type")
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
+
+	// Validate orchestrator price against configured max price
+	orchPrice := new(big.Rat).SetFrac64(priceInfo.PricePerUnit, priceInfo.PixelsPerUnit)
+	maxPrice := BroadcastCfg.GetCapabilitiesMaxPrice(streamParams.Capabilities)
+	if maxPrice != nil && orchPrice.Cmp(maxPrice) > 0 {
+		err := fmt.Errorf("orchestrator price %v exceeds maximum price %v", orchPrice.FloatString(3), maxPrice.FloatString(3))
+		clog.Warningf(ctx, "Rejecting payment request: %v", err)
+		respondJsonError(ctx, w, err, HTTPStatusPriceExceeded)
 		return
 	}
 
