@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,12 +126,14 @@ type OrchInfoSigResponse struct {
 // State required for remote ticket creation.
 // Treated as an opaque, signed blob by the gateway.
 type RemotePaymentState struct {
-	StateID             string
-	PMSessionID         string
-	LastUpdate          time.Time
-	OrchestratorAddress ethcommon.Address
-	SenderNonce         uint32
-	Balance             string
+	StateID              string
+	PMSessionID          string
+	LastUpdate           time.Time
+	OrchestratorAddress  ethcommon.Address
+	SenderNonce          uint32
+	Balance              string
+	InitialPricePerUnit  int64
+	InitialPixelsPerUnit int64
 }
 
 type RemotePaymentStateSig struct {
@@ -263,8 +266,10 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		}
 	} else {
 		state = &RemotePaymentState{
-			StateID:             string(core.RandomManifestID()),
-			OrchestratorAddress: orchAddr,
+			StateID:              string(core.RandomManifestID()),
+			OrchestratorAddress:  orchAddr,
+			InitialPricePerUnit:  priceInfo.PricePerUnit,
+			InitialPixelsPerUnit: priceInfo.PixelsPerUnit,
 		}
 	}
 
@@ -316,6 +321,11 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		nonce = 0
 	}
 
+	initialPrice := &net.PriceInfo{
+		PricePerUnit:  state.InitialPricePerUnit,
+		PixelsPerUnit: state.InitialPixelsPerUnit,
+	}
+
 	sess := &BroadcastSession{
 		Broadcaster:      core.NewBroadcaster(ls.LivepeerNode),
 		Params:           streamParams,
@@ -326,7 +336,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		OrchestratorInfo: &oInfo,
 		CleanupSession:   sender.CleanupSession,
 		PMSessionID:      sender.StartSessionWithNonce(*pmParams, nonce),
-		InitialPrice:     oInfo.PriceInfo,
+		InitialPrice:     initialPrice,
 	}
 	defer sess.CleanupSession(sess.PMSessionID)
 
@@ -373,8 +383,8 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Compute required fee
-	fee := calculateFee(pixels, priceInfo)
+	// Compute required fee using initial price
+	fee := calculateFee(pixels, initialPrice)
 
 	// Create balance update
 	balUpdate, err := newBalanceUpdate(sess, fee)
@@ -393,7 +403,12 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		if monitor.Enabled {
 			monitor.PaymentCreateError(ctx)
 		}
-		respondJsonError(ctx, w, err, http.StatusInternalServerError)
+		// Check if error is due to price increase validation (price-related error, not server error)
+		statusCode := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "Orchestrator price has more than doubled") {
+			statusCode = HTTPStatusPriceExceeded
+		}
+		respondJsonError(ctx, w, err, statusCode)
 		return
 	}
 

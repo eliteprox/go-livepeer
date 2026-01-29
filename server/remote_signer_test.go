@@ -350,25 +350,37 @@ func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 		return sig
 	}
 
+	priceIncreaseStateBytes, priceIncreaseStateSig := func() ([]byte, []byte) {
+		stateBytes, err := json.Marshal(RemotePaymentState{
+			StateID:              "state",
+			OrchestratorAddress:  ethcommon.BytesToAddress(orchInfo.Address),
+			InitialPricePerUnit:  100,
+			InitialPixelsPerUnit: 1,
+		})
+		require.NoError(err)
+		return stateBytes, sign(stateBytes)
+	}()
+
 	tests := []struct {
 		name       string
 		stateBytes []byte
 		stateSig   []byte
-		orchAddr   []byte
+		orchInfo   *net.OrchestratorInfo
+		wantStatus int
 		wantMsg    string
 	}{
 		{
 			name:       "invalid state signature",
 			stateBytes: []byte(`{"stateID":"state","orchestratorAddress":"0x0000000000000000000000000000000000000001"}`),
 			stateSig:   []byte("bad"),
-			orchAddr:   orchInfo.Address,
+			wantStatus: http.StatusBadRequest,
 			wantMsg:    "invalid sig",
 		},
 		{
 			name:       "invalid state json",
 			stateBytes: []byte("not-json"),
 			stateSig:   sign([]byte("not-json")),
-			orchAddr:   orchInfo.Address,
+			wantStatus: http.StatusBadRequest,
 			wantMsg:    "invalid state",
 		},
 		{
@@ -389,15 +401,34 @@ func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 				require.NoError(err)
 				return state
 			}()),
-			orchAddr: orchInfo.Address,
-			wantMsg:  "orchestratorAddress mismatch",
+			orchInfo: func() *net.OrchestratorInfo {
+				oInfo := proto.Clone(orchInfo).(*net.OrchestratorInfo)
+				oInfo.Address = ethcommon.HexToAddress("0x0000000000000000000000000000000000000002").Bytes()
+				return oInfo
+			}(),
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "orchestratorAddress mismatch",
+		},
+		{
+			name:       "orchestrator price increased more than 2x",
+			stateBytes: priceIncreaseStateBytes,
+			stateSig:   priceIncreaseStateSig,
+			orchInfo: func() *net.OrchestratorInfo {
+				oInfo := proto.Clone(orchInfo).(*net.OrchestratorInfo)
+				oInfo.PriceInfo = &net.PriceInfo{PricePerUnit: 250, PixelsPerUnit: 1}
+				return oInfo
+			}(),
+			wantStatus: HTTPStatusPriceExceeded,
+			wantMsg:    "Orchestrator price has more than doubled",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			oInfo := proto.Clone(orchInfo).(*net.OrchestratorInfo)
-			oInfo.Address = tt.orchAddr
+			oInfo := tt.orchInfo
+			if oInfo == nil {
+				oInfo = orchInfo
+			}
 			orchBlob, err := proto.Marshal(oInfo)
 			require.NoError(err)
 
@@ -413,7 +444,7 @@ func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 
 			ls.GenerateLivePayment(rr, req)
 
-			require.Equal(http.StatusBadRequest, rr.Code)
+			require.Equal(tt.wantStatus, rr.Code)
 			var apiErr apiErrorResponse
 			require.NoError(json.NewDecoder(rr.Body).Decode(&apiErr))
 			require.NotEmpty(apiErr.Error.Message)
