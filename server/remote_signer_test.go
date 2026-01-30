@@ -459,8 +459,72 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	ethClient := newTestEthClient(t)
 	node, _ := core.NewLivepeerNode(ethClient, "", nil)
 	node.Balances = core.NewAddressBalances(1 * time.Minute)
-	node.Sender = newMockSender(t, nil)
+	sender := newMockSender(t, nil)
+	// Local overrides to keep this test fast (fewer tickets) and ensure ticket
+	// count reflected in the payment matches the requested batch size.
+	{
+		var totalTickets uint32
+		filteredCalls := make([]*mock.Call, 0, len(sender.ExpectedCalls))
+		for _, call := range sender.ExpectedCalls {
+			if call.Method == "EV" || call.Method == "CreateTicketBatch" {
+				continue
+			}
+			filteredCalls = append(filteredCalls, call)
+		}
+		sender.ExpectedCalls = filteredCalls
+
+		sender.On("EV", mock.Anything).Return(big.NewRat(10, 1), nil)
+
+		batch := &pm.TicketBatch{}
+		sender.On("CreateTicketBatch", mock.Anything, mock.Anything).Return(batch, nil).Run(func(args mock.Arguments) {
+			size := args.Int(1)
+			*batch = *defaultTicketBatch()
+			baseSig := []byte(nil)
+			if len(batch.SenderParams) > 0 && batch.SenderParams[0] != nil {
+				baseSig = batch.SenderParams[0].Sig
+			}
+			batch.SenderParams = make([]*pm.TicketSenderParams, size)
+			for i := 0; i < size; i++ {
+				totalTickets++
+				batch.SenderParams[i] = &pm.TicketSenderParams{
+					SenderNonce: totalTickets,
+					Sig:         baseSig,
+				}
+			}
+		})
+	}
+	node.Sender = sender
 	ls := &LivepeerServer{LivepeerNode: node}
+
+	doPayment := func(reqPayload RemotePaymentRequest) (RemotePaymentResponse, net.Payment) {
+		reqBody, err := json.Marshal(reqPayload)
+		require.NoError(err)
+
+		req := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(reqBody))
+		rr := httptest.NewRecorder()
+
+		ls.GenerateLivePayment(rr, req)
+		require.Equal(http.StatusOK, rr.Code)
+
+		var resp RemotePaymentResponse
+		require.NoError(json.NewDecoder(rr.Body).Decode(&resp))
+		require.NotEmpty(resp.Payment)
+
+		paymentBytes, err := base64.StdEncoding.DecodeString(resp.Payment)
+		require.NoError(err)
+		var payment net.Payment
+		require.NoError(proto.Unmarshal(paymentBytes, &payment))
+
+		return resp, payment
+	}
+
+	ev, err := sender.EV("pmSession")
+	expectedBalance := func(oldBal *big.Rat, numTickets int, fee *big.Rat) *big.Rat {
+		// expected = oldBal + (numTickets * EV) - fee(initialPrice)
+		expected := new(big.Rat).Add(oldBal, new(big.Rat).Mul(new(big.Rat).SetInt64(int64(numTickets)), ev))
+		expected.Sub(expected, fee)
+		return expected
+	}
 
 	// Set a global max price; initial request price is below it.
 	maxPrice := big.NewRat(200, 1)
@@ -469,9 +533,14 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	BroadcastCfg.SetMaxPrice(autoPrice)
 	defer BroadcastCfg.SetMaxPrice(nil)
 
+	// Use small integers so the fee math is simple and deterministic.
+	//
+	// price = 150/175 wei per pixel = 6/7 wei per pixel
+	// inPixels = 1000 => fee = 1000 * 6/7 = 6000/7 ~= 857.14 wei
+	const inPixels int64 = 1000
 	oInfo := &net.OrchestratorInfo{
 		Address:   ethClient.addr.Bytes(),
-		PriceInfo: &net.PriceInfo{PricePerUnit: 150, PixelsPerUnit: 1},
+		PriceInfo: &net.PriceInfo{PricePerUnit: 150, PixelsPerUnit: 175},
 		TicketParams: &net.TicketParams{
 			Recipient: pm.RandAddress().Bytes(),
 		},
@@ -480,20 +549,10 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	orchBlob, err := proto.Marshal(oInfo)
 	require.NoError(err)
 
-	reqBody, err := json.Marshal(RemotePaymentRequest{
+	resp, payment := doPayment(RemotePaymentRequest{
 		Orchestrator: orchBlob,
-		Type:         RemoteType_LiveVideoToVideo,
+		InPixels:     inPixels,
 	})
-	require.NoError(err)
-
-	req := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(reqBody))
-	rr := httptest.NewRecorder()
-
-	ls.GenerateLivePayment(rr, req)
-
-	require.Equal(http.StatusOK, rr.Code)
-	var resp RemotePaymentResponse
-	require.NoError(json.NewDecoder(rr.Body).Decode(&resp))
 	require.NotEmpty(resp.Payment)
 	require.NotEmpty(resp.SegCreds)
 	require.NotEmpty(resp.State.State)
@@ -504,20 +563,53 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	require.NotEmpty(state.StateID)
 	require.Equal(ethClient.addr, state.OrchestratorAddress)
 	require.Equal("pmSession", state.PMSessionID)
-	require.Equal(uint32(7), state.SenderNonce)
 	require.NotEmpty(state.Balance)
 	require.False(state.LastUpdate.IsZero())
 
-	paymentBytes, err := base64.StdEncoding.DecodeString(resp.Payment)
-	require.NoError(err)
-	var payment net.Payment
-	require.NoError(proto.Unmarshal(paymentBytes, &payment))
-	require.NotNil(payment.ExpectedPrice)
-	require.EqualValues(oInfo.PriceInfo.PricePerUnit, payment.ExpectedPrice.PricePerUnit)
-	require.EqualValues(oInfo.PriceInfo.PixelsPerUnit, payment.ExpectedPrice.PixelsPerUnit)
-
 	_, err = base64.StdEncoding.DecodeString(resp.SegCreds)
 	require.NoError(err)
+
+	// Check that the initial price is still used even after a 1.5x increase
+	var state1 RemotePaymentState
+	require.NoError(json.Unmarshal(resp.State.State, &state1))
+	oldBal := new(big.Rat)
+	_, ok := oldBal.SetString(state1.Balance)
+	require.True(ok, "failed to parse old balance: %q", state1.Balance)
+
+	fee := new(big.Rat).Mul(new(big.Rat).SetFrac64(150, 175), new(big.Rat).SetInt64(inPixels)) // 6000/7
+	require.NoError(err)
+	expectedBal := expectedBalance(big.NewRat(0, 1), len(payment.TicketSenderParams), fee)
+	require.Zero(oldBal.Cmp(expectedBal), "unexpected state balance: got=%s want=%s fee=%s tickets=%d ev=%s",
+		oldBal.RatString(), expectedBal.RatString(), fee.RatString(), len(payment.TicketSenderParams), ev.RatString(),
+	)
+
+	updatedInfo := proto.Clone(oInfo).(*net.OrchestratorInfo)
+	updatedInfo.PriceInfo = &net.PriceInfo{
+		PricePerUnit:  oInfo.PriceInfo.PricePerUnit * 3 / 2, // 1.5x increase
+		PixelsPerUnit: oInfo.PriceInfo.PixelsPerUnit,
+	}
+	orchBlob, err = proto.Marshal(updatedInfo)
+	require.NoError(err)
+
+	const inPixelsUpdated int64 = 2500
+	resp2, payment2 := doPayment(RemotePaymentRequest{
+		Orchestrator: orchBlob,
+		InPixels:     inPixelsUpdated,
+		State:        resp.State,
+	})
+
+	var stateFee2 RemotePaymentState
+	require.NoError(json.Unmarshal(resp2.State.State, &stateFee2))
+	newBal := new(big.Rat)
+	_, ok = newBal.SetString(stateFee2.Balance)
+	require.True(ok, "failed to parse new balance: %q", stateFee2.Balance)
+
+	// Validate fee behavior via balance update.
+	fee = new(big.Rat).Mul(new(big.Rat).SetFrac64(150, 175), new(big.Rat).SetInt64(inPixelsUpdated)) // 15000/7
+	expectedNewBal := expectedBalance(oldBal, len(payment2.TicketSenderParams), fee)
+	require.Zero(newBal.Cmp(expectedNewBal), "unexpected balance: got=%s want=%s fee=%s old=%s tickets=%d ev=%s",
+		newBal.RatString(), expectedNewBal.RatString(), fee.RatString(), oldBal.RatString(), len(payment2.TicketSenderParams), ev.RatString(),
+	)
 
 	// Per-capability max price higher than global max should allow the request.
 	cap := core.Capability_LiveVideoToVideo
@@ -534,25 +626,22 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	orchBlob, err = proto.Marshal(oInfo)
 	require.NoError(err)
 
-	reqBody, err = json.Marshal(RemotePaymentRequest{
+	capResp, capPayment := doPayment(RemotePaymentRequest{
 		Orchestrator: orchBlob,
 		InPixels:     1,
 		Capabilities: capsBlob,
 	})
-	require.NoError(err)
 
-	req = httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(reqBody))
-	rr = httptest.NewRecorder()
+	var capState RemotePaymentState
+	require.NoError(json.Unmarshal(capResp.State.State, &capState))
+	capBal := new(big.Rat)
+	_, ok = capBal.SetString(capState.Balance)
+	require.True(ok, "failed to parse cap balance: %q", capState.Balance)
 
-	ls.GenerateLivePayment(rr, req)
-	require.Equal(http.StatusOK, rr.Code)
-	var capResp RemotePaymentResponse
-	require.NoError(json.NewDecoder(rr.Body).Decode(&capResp))
-	capPaymentBytes, err := base64.StdEncoding.DecodeString(capResp.Payment)
-	require.NoError(err)
-	var capPayment net.Payment
-	require.NoError(proto.Unmarshal(capPaymentBytes, &capPayment))
-	require.NotNil(capPayment.ExpectedPrice)
-	require.EqualValues(oInfo.PriceInfo.PricePerUnit, capPayment.ExpectedPrice.PricePerUnit)
-	require.EqualValues(oInfo.PriceInfo.PixelsPerUnit, capPayment.ExpectedPrice.PixelsPerUnit)
+	capFee := new(big.Rat).Mul(new(big.Rat).SetFrac64(300, 1), new(big.Rat).SetInt64(1))
+	expectedCapBal := expectedBalance(big.NewRat(0, 1), len(capPayment.TicketSenderParams), capFee)
+	require.Zero(capBal.Cmp(expectedCapBal), "unexpected cap balance: got=%s want=%s fee=%s tickets=%d ev=%s",
+		capBal.RatString(), expectedCapBal.RatString(), capFee.RatString(), len(capPayment.TicketSenderParams), ev.RatString(),
+	)
+
 }

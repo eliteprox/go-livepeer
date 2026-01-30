@@ -404,6 +404,10 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			monitor.PaymentCreateError(ctx)
 		}
 		// Check if error is due to price increase validation (price-related error, not server error)
+		// NB: Do not really want this to drift for any length of time.
+		// The initial price is used to calculate the number of tickets needed,
+		// and if this is lower then the G will run out of credit on the O.
+		// The O should keep the price fixed per session anyway
 		statusCode := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "Orchestrator price has more than doubled") {
 			statusCode = HTTPStatusPriceExceeded
