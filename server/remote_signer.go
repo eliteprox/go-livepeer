@@ -28,6 +28,29 @@ const HTTPStatusRefreshSession = 480
 const HTTPStatusPriceExceeded = 481
 const RemoteType_LiveVideoToVideo = "lv2v"
 
+func registeredOrchestratorsURIsHandler(node *core.LivepeerNode) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if node == nil || node.Eth == nil {
+			http.Error(w, "ethereum client missing", http.StatusInternalServerError)
+			return
+		}
+		orchestrators, err := node.Eth.TranscoderPool()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		serviceURIs := make([]string, 0, len(orchestrators))
+		for _, o := range orchestrators {
+			if o.ServiceURI == "" {
+				continue
+			}
+			serviceURIs = append(serviceURIs, o.ServiceURI)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(serviceURIs)
+	}
+}
+
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
 func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Request) {
 	ctx := clog.AddVal(r.Context(), "request_id", string(core.RandomManifestID()))
@@ -71,6 +94,7 @@ func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
 	// Register the remote signer endpoint
 	ls.HTTPMux.Handle("POST /sign-orchestrator-info", http.HandlerFunc(ls.SignOrchestratorInfo))
 	ls.HTTPMux.Handle("POST /generate-live-payment", http.HandlerFunc(ls.GenerateLivePayment))
+	ls.HTTPMux.Handle("/registeredOrchestrators", registeredOrchestratorsURIsHandler(ls.LivepeerNode))
 
 	// Start the HTTP server
 	glog.Info("Starting Remote Signer server on ", bind)
