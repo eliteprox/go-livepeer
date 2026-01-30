@@ -99,7 +99,7 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 	defer BroadcastCfg.SetCapabilityMaxPrice(capability1, modelID1, nil) // Clean up
 
 	baseOrchInfo := &net.OrchestratorInfo{
-		Address:   ethcommon.HexToAddress("0x0000000000000000000000000000000000000001").Bytes(),
+		Address:   ethcommon.HexToAddress("0x1").Bytes(),
 		PriceInfo: &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1},
 		TicketParams: &net.TicketParams{
 			Recipient: pm.RandAddress().Bytes(),
@@ -371,7 +371,7 @@ func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 	}{
 		{
 			name:       "invalid state signature",
-			stateBytes: []byte(`{"stateID":"state","orchestratorAddress":"0x0000000000000000000000000000000000000001"}`),
+			stateBytes: []byte(`{"stateID":"state","orchestratorAddress":"0x1"}`),
 			stateSig:   []byte("bad"),
 			wantStatus: http.StatusBadRequest,
 			wantMsg:    "invalid sig",
@@ -388,7 +388,7 @@ func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 			stateBytes: func() []byte {
 				state, err := json.Marshal(RemotePaymentState{
 					StateID:             "state",
-					OrchestratorAddress: ethcommon.HexToAddress("0x0000000000000000000000000000000000000002"),
+					OrchestratorAddress: ethcommon.HexToAddress("0x2"),
 				})
 				require.NoError(err)
 				return state
@@ -396,14 +396,14 @@ func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 			stateSig: sign(func() []byte {
 				state, err := json.Marshal(RemotePaymentState{
 					StateID:             "state",
-					OrchestratorAddress: ethcommon.HexToAddress("0x0000000000000000000000000000000000000002"),
+					OrchestratorAddress: ethcommon.HexToAddress("0x2"),
 				})
 				require.NoError(err)
 				return state
 			}()),
 			orchInfo: func() *net.OrchestratorInfo {
 				oInfo := proto.Clone(orchInfo).(*net.OrchestratorInfo)
-				oInfo.Address = ethcommon.HexToAddress("0x0000000000000000000000000000000000000002").Bytes()
+				oInfo.Address = ethcommon.HexToAddress("0x2").Bytes()
 				return oInfo
 			}(),
 			wantStatus: http.StatusBadRequest,

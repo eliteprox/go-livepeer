@@ -117,7 +117,7 @@ func TestAccountPayment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			sessionID := "abcdef"
-			sender := ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
+			sender := ethcommon.HexToAddress("0x1")
 			segmentInfo := &SegmentInfoReceiver{
 				sender:    sender,
 				sessionID: sessionID,
