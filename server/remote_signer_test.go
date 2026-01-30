@@ -387,16 +387,18 @@ func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 			name: "orchestrator address mismatch",
 			stateBytes: func() []byte {
 				state, err := json.Marshal(RemotePaymentState{
-					StateID:             "state",
-					OrchestratorAddress: ethcommon.HexToAddress("0x2"),
+					StateID:              "state",
+					OrchestratorAddress:  ethcommon.HexToAddress("0x1"),
+					InitialPixelsPerUnit: 1,
 				})
 				require.NoError(err)
 				return state
 			}(),
 			stateSig: sign(func() []byte {
 				state, err := json.Marshal(RemotePaymentState{
-					StateID:             "state",
-					OrchestratorAddress: ethcommon.HexToAddress("0x2"),
+					StateID:              "state",
+					OrchestratorAddress:  ethcommon.HexToAddress("0x1"),
+					InitialPixelsPerUnit: 1,
 				})
 				require.NoError(err)
 				return state
