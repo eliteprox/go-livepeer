@@ -393,6 +393,18 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		respondJsonError(ctx, w, err, http.StatusInternalServerError)
 		return
 	}
+	if balUpdate.NumTickets > 100 {
+		// Prevent both draining funds and perf issues
+		ev, err := sender.EV(sess.PMSessionID)
+		if err != nil {
+			clog.Errorf(ctx, "Could not retrieve EV", err)
+			ev = new(big.Rat)
+		}
+		err = fmt.Errorf("numTickets %d exceeds maximum of 100", balUpdate.NumTickets)
+		clog.Errorf(ctx, "%v: if legitimate check EV config %s", err, ev.FloatString(3))
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
 	balUpdate.Debit = fee
 	balUpdate.Status = ReceivedChange
 

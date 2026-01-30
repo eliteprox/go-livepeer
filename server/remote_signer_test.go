@@ -245,6 +245,16 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 			wantMsg:    "missing pixels or job type",
 		},
 		{
+			name: "num tickets exceeds limit",
+			req: func() RemotePaymentRequest {
+				r := baseReq()
+				r.InPixels = 101
+				return r
+			}(),
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "exceeds maximum of 100",
+		},
+		{
 			name: "invalid capabilities protobuf",
 			req: func() RemotePaymentRequest {
 				r := baseReq()
@@ -475,7 +485,7 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 		}
 		sender.ExpectedCalls = filteredCalls
 
-		sender.On("EV", mock.Anything).Return(big.NewRat(10, 1), nil)
+		sender.On("EV", mock.Anything).Return(big.NewRat(35, 1), nil)
 
 		batch := &pm.TicketBatch{}
 		sender.On("CreateTicketBatch", mock.Anything, mock.Anything).Return(batch, nil).Run(func(args mock.Arguments) {
