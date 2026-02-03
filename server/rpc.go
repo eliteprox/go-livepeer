@@ -91,6 +91,7 @@ type Orchestrator interface {
 	ReserveExternalCapabilityCapacity(extCapability string) error
 	FreeExternalCapabilityCapacity(extCapability string) error
 	JobPriceInfo(sender ethcommon.Address, jobCapabiliy string) (*net.PriceInfo, error)
+	ExternalCapabilities() map[string]*core.ExternalCapability
 }
 
 // Balance describes methods for a session's balance maintenance
@@ -476,16 +477,37 @@ func orchestratorInfoWithCaps(orch Orchestrator, addr ethcommon.Address, service
 	capabilities := orch.Capabilities()
 	setLiveAICapacity(orch, capabilities)
 
+	// Build external capabilities list
+	var externalCaps []*net.ExternalCapabilityInfo
+	if extCapsMap := orch.ExternalCapabilities(); extCapsMap != nil {
+		for name, cap := range extCapsMap {
+			cap.Mu.RLock()
+			extCapInfo := &net.ExternalCapabilityInfo{
+				Name:          name,
+				Description:   cap.Description,
+				Capacity:      int32(cap.Capacity),
+				CapacityInUse: int32(cap.Load),
+				PriceInfo: &net.PriceInfo{
+					PricePerUnit:  cap.PricePerUnit,
+					PixelsPerUnit: cap.PriceScaling,
+				},
+			}
+			cap.Mu.RUnlock()
+			externalCaps = append(externalCaps, extCapInfo)
+		}
+	}
+
 	tr := net.OrchestratorInfo{
-		Transcoder:         serviceURI,
-		Nodes:              orch.Nodes(),
-		TicketParams:       params,
-		PriceInfo:          priceInfo,
-		Address:            orch.Address().Bytes(),
-		Capabilities:       capabilities,
-		AuthToken:          authToken,
-		Hardware:           workerHardware,
-		CapabilitiesPrices: capsPrices,
+		Transcoder:           serviceURI,
+		Nodes:                orch.Nodes(),
+		TicketParams:         params,
+		PriceInfo:            priceInfo,
+		Address:              orch.Address().Bytes(),
+		Capabilities:         capabilities,
+		AuthToken:            authToken,
+		Hardware:             workerHardware,
+		CapabilitiesPrices:   capsPrices,
+		ExternalCapabilities: externalCaps,
 	}
 
 	os := drivers.NodeStorage.NewSession(authToken.SessionId)

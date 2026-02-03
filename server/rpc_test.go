@@ -281,6 +281,9 @@ func (r *stubOrchestrator) JobPriceInfo(sender ethcommon.Address, jobCapability 
 func (r *stubOrchestrator) GetUrlForCapability(capability string) string {
 	return ""
 }
+func (r *stubOrchestrator) ExternalCapabilities() map[string]*core.ExternalCapability {
+	return nil
+}
 func (r *stubOrchestrator) ExtraNodes() int {
 	return 0
 }
@@ -1634,6 +1637,9 @@ func (o *mockOrchestrator) JobPriceInfo(sender ethcommon.Address, jobCapability 
 }
 func (o *mockOrchestrator) GetUrlForCapability(capability string) string {
 	return ""
+}
+func (o *mockOrchestrator) ExternalCapabilities() map[string]*core.ExternalCapability {
+	return nil
 }
 
 func defaultTicketParams() *net.TicketParams {
