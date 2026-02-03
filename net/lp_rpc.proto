@@ -183,6 +183,9 @@ message OrchestratorInfo {
 
   // List of other node URIs belonging to this orchestrator.
   repeated string nodes = 34;
+
+  // External/BYOC capabilities registered with this orchestrator
+  repeated ExternalCapabilityInfo external_capabilities = 36;
 }
 
 // Data for transcoding authentication that is included in the OrchestratorInfo
@@ -539,4 +542,22 @@ message HardwareInformation {
 
   // hardware for pipeline and model_id
   map<string, GPUComputeInfo> gpu_info = 3;
+}
+
+// External/BYOC capability information
+message ExternalCapabilityInfo {
+  // Name of the external capability (e.g., "comfystream", "text-reversal")
+  string name = 1;
+
+  // Human-readable description of the capability
+  string description = 2;
+
+  // Total capacity available for this capability
+  int32 capacity = 3;
+
+  // Current capacity in use
+  int32 capacity_in_use = 4;
+
+  // Pricing information for this capability
+  PriceInfo price_info = 5;
 }
