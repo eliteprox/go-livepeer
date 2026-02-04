@@ -2417,8 +2417,6 @@ type ExternalCapabilityInfo struct {
 	Capacity int32 `protobuf:"varint,3,opt,name=capacity,proto3" json:"capacity,omitempty"`
 	// Current capacity in use
 	CapacityInUse int32 `protobuf:"varint,4,opt,name=capacity_in_use,json=capacityInUse,proto3" json:"capacity_in_use,omitempty"`
-	// Pricing information for this capability
-	PriceInfo     *PriceInfo `protobuf:"bytes,5,opt,name=price_info,json=priceInfo,proto3" json:"price_info,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2479,13 +2477,6 @@ func (x *ExternalCapabilityInfo) GetCapacityInUse() int32 {
 		return x.CapacityInUse
 	}
 	return 0
-}
-
-func (x *ExternalCapabilityInfo) GetPriceInfo() *PriceInfo {
-	if x != nil {
-		return x.PriceInfo
-	}
-	return nil
 }
 
 // Non-binary constraints.
@@ -2881,14 +2872,12 @@ const file_net_lp_rpc_proto_rawDesc = "" +
 	"\bgpu_info\x18\x03 \x03(\v2%.net.HardwareInformation.GpuInfoEntryR\agpuInfo\x1aO\n" +
 	"\fGpuInfoEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.net.GPUComputeInfoR\x05value:\x028\x01\"\xc1\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.net.GPUComputeInfoR\x05value:\x028\x01\"\x92\x01\n" +
 	"\x16ExternalCapabilityInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1a\n" +
 	"\bcapacity\x18\x03 \x01(\x05R\bcapacity\x12&\n" +
-	"\x0fcapacity_in_use\x18\x04 \x01(\x05R\rcapacityInUse\x12-\n" +
-	"\n" +
-	"price_info\x18\x05 \x01(\v2\x0e.net.PriceInfoR\tpriceInfo2\xd8\x01\n" +
+	"\x0fcapacity_in_use\x18\x04 \x01(\x05R\rcapacityInUse2\xd8\x01\n" +
 	"\fOrchestrator\x12B\n" +
 	"\x0fGetOrchestrator\x12\x18.net.OrchestratorRequest\x1a\x15.net.OrchestratorInfo\x12^\n" +
 	"\x15EndTranscodingSession\x12!.net.EndTranscodingSessionRequest\x1a\".net.EndTranscodingSessionResponse\x12$\n" +
@@ -2997,27 +2986,26 @@ var file_net_lp_rpc_proto_depIdxs = []int32{
 	28, // 37: net.Payment.ticket_sender_params:type_name -> net.TicketSenderParams
 	11, // 38: net.Payment.expected_price:type_name -> net.PriceInfo
 	40, // 39: net.HardwareInformation.gpu_info:type_name -> net.HardwareInformation.GpuInfoEntry
-	11, // 40: net.ExternalCapabilityInfo.price_info:type_name -> net.PriceInfo
-	37, // 41: net.Capabilities.Constraints.PerCapability:type_name -> net.Capabilities.Constraints.PerCapabilityEntry
-	39, // 42: net.Capabilities.CapabilityConstraints.models:type_name -> net.Capabilities.CapabilityConstraints.ModelsEntry
-	36, // 43: net.Capabilities.Constraints.PerCapabilityEntry.value:type_name -> net.Capabilities.CapabilityConstraints
-	38, // 44: net.Capabilities.CapabilityConstraints.ModelsEntry.value:type_name -> net.Capabilities.CapabilityConstraints.ModelConstraint
-	31, // 45: net.HardwareInformation.GpuInfoEntry.value:type_name -> net.GPUComputeInfo
-	8,  // 46: net.Orchestrator.GetOrchestrator:input_type -> net.OrchestratorRequest
-	6,  // 47: net.Orchestrator.EndTranscodingSession:input_type -> net.EndTranscodingSessionRequest
-	5,  // 48: net.Orchestrator.Ping:input_type -> net.PingPong
-	24, // 49: net.AIWorker.RegisterAIWorker:input_type -> net.RegisterAIWorkerRequest
-	22, // 50: net.Transcoder.RegisterTranscoder:input_type -> net.RegisterRequest
-	13, // 51: net.Orchestrator.GetOrchestrator:output_type -> net.OrchestratorInfo
-	7,  // 52: net.Orchestrator.EndTranscodingSession:output_type -> net.EndTranscodingSessionResponse
-	5,  // 53: net.Orchestrator.Ping:output_type -> net.PingPong
-	26, // 54: net.AIWorker.RegisterAIWorker:output_type -> net.NotifyAIJob
-	23, // 55: net.Transcoder.RegisterTranscoder:output_type -> net.NotifySegment
-	51, // [51:56] is the sub-list for method output_type
-	46, // [46:51] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	37, // 40: net.Capabilities.Constraints.PerCapability:type_name -> net.Capabilities.Constraints.PerCapabilityEntry
+	39, // 41: net.Capabilities.CapabilityConstraints.models:type_name -> net.Capabilities.CapabilityConstraints.ModelsEntry
+	36, // 42: net.Capabilities.Constraints.PerCapabilityEntry.value:type_name -> net.Capabilities.CapabilityConstraints
+	38, // 43: net.Capabilities.CapabilityConstraints.ModelsEntry.value:type_name -> net.Capabilities.CapabilityConstraints.ModelConstraint
+	31, // 44: net.HardwareInformation.GpuInfoEntry.value:type_name -> net.GPUComputeInfo
+	8,  // 45: net.Orchestrator.GetOrchestrator:input_type -> net.OrchestratorRequest
+	6,  // 46: net.Orchestrator.EndTranscodingSession:input_type -> net.EndTranscodingSessionRequest
+	5,  // 47: net.Orchestrator.Ping:input_type -> net.PingPong
+	24, // 48: net.AIWorker.RegisterAIWorker:input_type -> net.RegisterAIWorkerRequest
+	22, // 49: net.Transcoder.RegisterTranscoder:input_type -> net.RegisterRequest
+	13, // 50: net.Orchestrator.GetOrchestrator:output_type -> net.OrchestratorInfo
+	7,  // 51: net.Orchestrator.EndTranscodingSession:output_type -> net.EndTranscodingSessionResponse
+	5,  // 52: net.Orchestrator.Ping:output_type -> net.PingPong
+	26, // 53: net.AIWorker.RegisterAIWorker:output_type -> net.NotifyAIJob
+	23, // 54: net.Transcoder.RegisterTranscoder:output_type -> net.NotifySegment
+	50, // [50:55] is the sub-list for method output_type
+	45, // [45:50] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_net_lp_rpc_proto_init() }

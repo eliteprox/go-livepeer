@@ -557,7 +557,4 @@ message ExternalCapabilityInfo {
 
   // Current capacity in use
   int32 capacity_in_use = 4;
-
-  // Pricing information for this capability
-  PriceInfo price_info = 5;
 }
