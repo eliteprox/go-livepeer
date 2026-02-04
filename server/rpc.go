@@ -482,16 +482,12 @@ func orchestratorInfoWithCaps(orch Orchestrator, addr ethcommon.Address, service
 	if extCapsMap := orch.ExternalCapabilities(); extCapsMap != nil {
 		for name, cap := range extCapsMap {
 			cap.Mu.RLock()
-			extCapInfo := &net.ExternalCapabilityInfo{
-				Name:          name,
-				Description:   cap.Description,
-				Capacity:      int32(cap.Capacity),
-				CapacityInUse: int32(cap.Load),
-				PriceInfo: &net.PriceInfo{
-					PricePerUnit:  cap.PricePerUnit,
-					PixelsPerUnit: cap.PriceScaling,
-				},
-			}
+		extCapInfo := &net.ExternalCapabilityInfo{
+			Name:          name,
+			Description:   cap.Description,
+			Capacity:      int32(cap.Capacity),
+			CapacityInUse: int32(cap.Load),
+		}
 			cap.Mu.RUnlock()
 			externalCaps = append(externalCaps, extCapInfo)
 		}
