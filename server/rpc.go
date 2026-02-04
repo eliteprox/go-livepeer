@@ -477,33 +477,16 @@ func orchestratorInfoWithCaps(orch Orchestrator, addr ethcommon.Address, service
 	capabilities := orch.Capabilities()
 	setLiveAICapacity(orch, capabilities)
 
-	// Build external capabilities list
-	var externalCaps []*net.ExternalCapabilityInfo
-	if extCapsMap := orch.ExternalCapabilities(); extCapsMap != nil {
-		for name, cap := range extCapsMap {
-			cap.Mu.RLock()
-		extCapInfo := &net.ExternalCapabilityInfo{
-			Name:          name,
-			Description:   cap.Description,
-			Capacity:      int32(cap.Capacity),
-			CapacityInUse: int32(cap.Load),
-		}
-			cap.Mu.RUnlock()
-			externalCaps = append(externalCaps, extCapInfo)
-		}
-	}
-
 	tr := net.OrchestratorInfo{
-		Transcoder:           serviceURI,
-		Nodes:                orch.Nodes(),
-		TicketParams:         params,
-		PriceInfo:            priceInfo,
-		Address:              orch.Address().Bytes(),
-		Capabilities:         capabilities,
-		AuthToken:            authToken,
-		Hardware:             workerHardware,
-		CapabilitiesPrices:   capsPrices,
-		ExternalCapabilities: externalCaps,
+		Transcoder:         serviceURI,
+		Nodes:              orch.Nodes(),
+		TicketParams:       params,
+		PriceInfo:          priceInfo,
+		Address:            orch.Address().Bytes(),
+		Capabilities:       capabilities,
+		AuthToken:          authToken,
+		Hardware:           workerHardware,
+		CapabilitiesPrices: capsPrices,
 	}
 
 	os := drivers.NodeStorage.NewSession(authToken.SessionId)
