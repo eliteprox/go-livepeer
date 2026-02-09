@@ -169,6 +169,7 @@ type LivepeerConfig struct {
 	TestOrchAvail              *bool
 	RemoteSigner               *bool
 	RemoteSignerUrl            *string
+	RemoteSignerJWKSUrl        *string
 	AIRunnerImage              *string
 	AIRunnerImageOverrides     *string
 	AIVerboseLogs              *bool
@@ -306,6 +307,7 @@ func DefaultLivepeerConfig() LivepeerConfig {
 	defaultTestOrchAvail := true
 	defaultRemoteSigner := false
 	defaultRemoteSignerUrl := ""
+	defaultRemoteSignerJWKSUrl := ""
 
 	// Gateway logs
 	defaultKafkaBootstrapServers := ""
@@ -427,8 +429,9 @@ func DefaultLivepeerConfig() LivepeerConfig {
 
 		// Flags
 		TestOrchAvail:   &defaultTestOrchAvail,
-		RemoteSigner:    &defaultRemoteSigner,
-		RemoteSignerUrl: &defaultRemoteSignerUrl,
+		RemoteSigner:               &defaultRemoteSigner,
+		RemoteSignerUrl:            &defaultRemoteSignerUrl,
+		RemoteSignerJWKSUrl:        &defaultRemoteSignerJWKSUrl,
 
 		// Gateway logs
 		KafkaBootstrapServers: &defaultKafkaBootstrapServers,
@@ -1846,8 +1849,17 @@ func StartLivepeer(ctx context.Context, cfg LivepeerConfig) {
 	if n.NodeType == core.RemoteSignerNode {
 		go func() {
 			*cfg.HttpAddr = defaultAddr(*cfg.HttpAddr, "127.0.0.1", OrchestratorRpcPort)
+
+		// Build auth config if JWKS URL is set
+		var authCfg *server.RemoteSignerAuthConfig
+		if *cfg.RemoteSignerJWKSUrl != "" {
+			authCfg = &server.RemoteSignerAuthConfig{
+				JWKSUrl: *cfg.RemoteSignerJWKSUrl,
+			}
+		}
+
 			glog.Info("Starting remote signer server on ", *cfg.HttpAddr)
-			err := server.StartRemoteSignerServer(s, *cfg.HttpAddr)
+			err := server.StartRemoteSignerServer(s, *cfg.HttpAddr, authCfg)
 			if err != nil {
 				exit("Error starting remote signer server: err=%q", err)
 			}

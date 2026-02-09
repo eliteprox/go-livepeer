@@ -5,12 +5,14 @@ go 1.25.0
 require (
 	contrib.go.opencensus.io/exporter/prometheus v0.4.2
 	github.com/Masterminds/semver/v3 v3.2.1
+	github.com/MicahParks/keyfunc/v2 v2.1.0
 	github.com/bluenviron/gortsplib/v4 v4.12.3
 	github.com/bluenviron/mediacommon/v2 v2.4.0
 	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/dustin/go-humanize v1.0.1
 	github.com/ethereum/go-ethereum v1.13.5
 	github.com/getkin/kin-openapi v0.128.0
+	github.com/golang-jwt/jwt/v5 v5.0.0
 	github.com/golang/glog v1.2.2
 	github.com/golang/mock v1.6.0
 	github.com/golang/protobuf v1.5.4
@@ -83,7 +85,7 @@ require (
 	github.com/aws/aws-sdk-go v1.44.273 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.7.0 // indirect
-	github.com/btcsuite/btcd/btcec/v2 v2.2.0 // indirect
+	github.com/btcsuite/btcd/btcec/v2 v2.3.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cockroachdb/errors v1.8.1 // indirect

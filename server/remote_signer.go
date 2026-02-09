@@ -32,6 +32,9 @@ const RemoteType_LiveVideoToVideo = "lv2v"
 func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Request) {
 	ctx := clog.AddVal(r.Context(), "request_id", string(core.RandomManifestID()))
 	remoteAddr := getRemoteAddr(r)
+	if user := UserFromContext(r.Context()); user != "" {
+		ctx = clog.AddVal(ctx, "auth_user", user)
+	}
 	clog.Info(ctx, "Orch info signature request", "ip", remoteAddr)
 
 	// Get the broadcaster (signer)
@@ -66,11 +69,25 @@ func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(results)
 }
 
-// StartRemoteSignerServer starts the HTTP server for remote signer mode
-func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
-	// Register the remote signer endpoint
+// StartRemoteSignerServer starts the HTTP server for remote signer mode.
+// If authCfg is non-nil, JWT authentication middleware is applied to all endpoints.
+func StartRemoteSignerServer(ls *LivepeerServer, bind string, authCfg *RemoteSignerAuthConfig) error {
+	// Register the remote signer endpoints
 	ls.HTTPMux.Handle("POST /sign-orchestrator-info", http.HandlerFunc(ls.SignOrchestratorInfo))
 	ls.HTTPMux.Handle("POST /generate-live-payment", http.HandlerFunc(ls.GenerateLivePayment))
+
+	// Determine the final handler: wrap with auth middleware if configured
+	var handler http.Handler = ls.HTTPMux
+	if authCfg != nil {
+		validator, err := newJWTValidator(authCfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize JWT auth: %w", err)
+		}
+		handler = jwtAuthMiddleware(validator, ls.HTTPMux)
+		glog.Info("Remote signer JWT authentication enabled")
+	} else {
+		glog.Warning("Remote signer running WITHOUT authentication. Do not expose to untrusted networks.")
+	}
 
 	// Start the HTTP server
 	glog.Info("Starting Remote Signer server on ", bind)
@@ -82,7 +99,7 @@ func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
 	ls.LivepeerNode.InfoSig = sig
 	srv := http.Server{
 		Addr:        bind,
-		Handler:     ls.HTTPMux,
+		Handler:     handler,
 		IdleTimeout: HTTPIdleTimeout,
 	}
 	return srv.ListenAndServe()
@@ -199,6 +216,9 @@ func verifyStateSignature(ls *LivepeerServer, stateBytes []byte, sig []byte) err
 func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Request) {
 	ctx := clog.AddVal(r.Context(), "request_id", string(core.RandomManifestID()))
 	remoteAddr := getRemoteAddr(r)
+	if user := UserFromContext(r.Context()); user != "" {
+		ctx = clog.AddVal(ctx, "auth_user", user)
+	}
 	clog.Info(ctx, "Live payment request", "ip", remoteAddr)
 
 	// TODO avoid using the global Balances; keep balance changes request-local

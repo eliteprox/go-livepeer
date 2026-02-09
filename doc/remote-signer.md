@@ -106,8 +106,177 @@ If there are errors about too many tickets (eg `numTickets ... exceeds maximum o
 
 For PM configuration details and how these knobs interact, see `doc/payments.md`.
 
+## Authentication
+
+The remote signer supports JWT-based authentication so it can be exposed to authenticated end-users (e.g., desktop app users) rather than requiring private-network-only deployment.
+
+Users authenticate with a separate **jwt-issuer** service via Sign-In With Ethereum (EIP-4361 / SIWE). The jwt-issuer verifies wallet signatures and issues RS256 JWTs. The remote signer validates these JWTs by fetching the public key from the jwt-issuer's JWKS endpoint.
+
+```mermaid
+sequenceDiagram
+  participant User as User_Wallet
+  participant Auth as JWT_Issuer
+  participant RS as Remote_Signer
+
+  User->>Auth: POST /auth/nonce
+  Auth-->>User: {nonce, domain}
+  Note over User: Sign SIWE message with wallet
+  User->>Auth: POST /auth/login {message, signature}
+  Auth->>Auth: ecrecover + verify EIP-4361
+  Auth-->>User: {token, expires_at, address}
+  User->>RS: POST /sign-orchestrator-info (Bearer token)
+  RS->>RS: Validate JWT via JWKS public key
+  RS-->>User: {address, signature}
+```
+
+See [github.com/livepeer/jwt-issuer](https://github.com/livepeer/jwt-issuer) for the auth service and [quickstart-remote-signer-web3.md](quickstart-remote-signer-web3.md) for a full deployment walkthrough.
+
+### Configuration flags
+
+Authentication is **opt-in**. If no auth flag is set, the remote signer runs without authentication (for private-network deployments).
+
+| Flag | Mode | Use case |
+|------|------|----------|
+| `-remoteSignerJWKSUrl <url>` | JWKS endpoint for asymmetric JWT verification (RS256) | Production (with jwt-issuer or any JWKS-serving auth service) |
+| `-remoteSignerAuthSecret <secret>` | Shared HMAC secret for symmetric JWT verification (HS256) | Dev/testing only |
+
+Only one flag may be set. If both are provided, the node will fail to start.
+
+### JWT claims format
+
+The remote signer expects JWTs with the following claims:
+
+```json
+{
+  "sub": "0xUserWalletAddress",
+  "iss": "https://livepeer.ai",
+  "aud": "livepeer-remote-signer",
+  "exp": 1735689600,
+  "iat": 1735603200,
+  "jti": "unique-token-id",
+  "scope": "sign:orchestrator sign:payment sign:byoc",
+  "spending_cap_wei": "1000000000000000000",
+  "tier": "standard"
+}
+```
+
+Required claims:
+- `sub` (subject): The user's Ethereum wallet address (e.g., `0xAbCd...`). Used for identity and accounting.
+- `aud` (audience): Must be `"livepeer-remote-signer"`. Tokens with a different audience are rejected.
+- `exp` (expiration): Token expiry timestamp. Expired tokens are rejected.
+
+Optional/informational claims (present for future use, not yet enforced by the signer):
+- `scope`: Space-separated list of allowed operations.
+- `spending_cap_wei`: Per-session spending limit in wei.
+- `tier`: User service tier.
+
+### Verification modes
+
+**JWKS (asymmetric, recommended for production)**
+
+The auth website publishes its public keys at a JWKS endpoint. The remote signer fetches and caches these keys, with automatic background refresh (every hour). This is the standard approach for production deployments where the auth website uses RSA or EC keys to sign JWTs.
+
+```bash
+./livepeer \
+  -remoteSigner \
+  -remoteSignerJWKSUrl https://livepeer.ai/.well-known/jwks.json \
+  -network mainnet \
+  -httpAddr 0.0.0.0:7936 \
+  -ethUrl <eth-rpc-url> \
+  -ethPassword <password-or-password-file>
+```
+
+**HMAC (symmetric, for development/testing)**
+
+A shared secret known to both the auth website and the remote signer. Simpler to set up but requires secure secret distribution.
+
+```bash
+./livepeer \
+  -remoteSigner \
+  -remoteSignerAuthSecret "my-shared-secret-at-least-32-bytes" \
+  -network mainnet \
+  -httpAddr 127.0.0.1:7936 \
+  -ethUrl <eth-rpc-url> \
+  -ethPassword <password-or-password-file>
+```
+
+### Calling authenticated endpoints
+
+Once authentication is enabled, all remote signer endpoints require a valid JWT in the `Authorization` header:
+
+```bash
+curl -X POST http://localhost:7936/sign-orchestrator-info \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -H "Content-Type: application/json"
+```
+
+Unauthenticated requests receive a `401 Unauthorized` response.
+
+### Deployment guide: end-to-end SIWE + JWT setup
+
+This section describes how to deploy the full authentication flow for a use case like ComfyUI desktop app users.
+
+**Components:**
+
+1. **Auth website** (e.g., livepeer.ai) -- issues JWTs after SIWE login. This is separate infrastructure, not part of go-livepeer.
+2. **Remote signer** (go-livepeer with `-remoteSigner`) -- validates JWTs and signs on behalf of authenticated users.
+3. **Gateway** (go-livepeer with `-gateway`) -- routes media work, delegates signing to the remote signer.
+4. **Desktop app** (e.g., ComfyUI) -- the end-user client that holds the JWT token.
+
+**Step 1: Set up the auth website**
+
+The auth website needs to:
+- Serve a SIWE login flow (connect wallet, sign message, verify signature)
+- Issue JWTs signed with its private key, containing the user's ETH address as `sub` and `"livepeer-remote-signer"` as `aud`
+- Publish public keys at a JWKS endpoint (e.g., `/.well-known/jwks.json`)
+
+Libraries: [siwe](https://github.com/spruceid/siwe) (JS/Go/Rust), [golang-jwt](https://github.com/golang-jwt/jwt) for JWT signing, any JWKS server library.
+
+**Step 2: Start the remote signer with authentication**
+
+```bash
+./livepeer \
+  -remoteSigner \
+  -remoteSignerJWKSUrl https://your-auth-website.com/.well-known/jwks.json \
+  -network mainnet \
+  -httpAddr 0.0.0.0:7936 \
+  -ethUrl <eth-rpc-url> \
+  -ethPassword <password-or-password-file> \
+  -maxPricePerUnit 1200 \
+  -pixelsPerUnit 1
+```
+
+**Step 3: Start the gateway pointing to the remote signer**
+
+```bash
+./livepeer \
+  -gateway \
+  -httpAddr :9935 \
+  -remoteSignerUrl http://signer-host:7936 \
+  -orchAddr orchestrator:8935
+```
+
+**Step 4: User workflow (ComfyUI example)**
+
+1. User opens the auth website in a browser
+2. Connects their Ethereum wallet (MetaMask, WalletConnect, etc.)
+3. Signs a SIWE message: "Sign in to Livepeer Remote Signer Service"
+4. The auth website verifies the signature and returns a JWT token
+5. User copies the JWT token and pastes it into their ComfyUI node configuration
+6. ComfyUI sends requests to the remote signer (or gateway) with the JWT in the `Authorization: Bearer <token>` header
+
+### Token lifetime and revocation
+
+JWTs are validated locally, so there is no real-time revocation mechanism. Security is managed through short token lifetimes:
+
+- **Recommended token lifetime**: 1-24 hours depending on risk tolerance
+- **Refresh flow**: The auth website can implement a refresh token mechanism so users don't need to re-authenticate frequently
+- **Revocation**: If a token needs to be revoked before expiry, rotate the signing keys on the auth website. The remote signer's JWKS cache refreshes hourly by default.
+
 ## Operational + security guidance
 
-For the moment, remote signers are intended to sit behind infrastructure controls rather than being exposed directly to end-users. For example, run the remote signer on a private network or behind an authenticated proxy. Do not expose the remote signer to unauthenticated end-users. Run the remote signer close to gateways on a private network; protect it like you would an internal wallet service.
+When authentication is enabled (via `-remoteSignerJWKSUrl` or `-remoteSignerAuthSecret`), the remote signer can be safely exposed to authenticated end-users over the network. All requests are validated against the JWT before any signing operation is performed. The authenticated user's Ethereum address is logged with each request for audit purposes.
+
+When authentication is **not** enabled, remote signers should sit behind infrastructure controls rather than being exposed directly to end-users. For example, run the remote signer on a private network or behind an authenticated proxy. Do not expose an unauthenticated remote signer to end-users. Run the remote signer close to gateways on a private network; protect it like you would an internal wallet service.
 
 Remote signers are stateless, so signer nodes can operate in a redundant configuration (eg, round-robin DNS, anycasting) with no special gateway-side configuration.
