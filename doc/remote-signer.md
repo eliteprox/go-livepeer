@@ -133,14 +133,11 @@ See [github.com/livepeer/jwt-issuer](https://github.com/livepeer/jwt-issuer) for
 
 ### Configuration flags
 
-Authentication is **opt-in**. If no auth flag is set, the remote signer runs without authentication (for private-network deployments).
+Authentication is **opt-in**. If `-remoteSignerJWKSUrl` is not set, the remote signer runs without authentication (for private-network deployments).
 
-| Flag | Mode | Use case |
-|------|------|----------|
-| `-remoteSignerJWKSUrl <url>` | JWKS endpoint for asymmetric JWT verification (RS256) | Production (with jwt-issuer or any JWKS-serving auth service) |
-| `-remoteSignerAuthSecret <secret>` | Shared HMAC secret for symmetric JWT verification (HS256) | Dev/testing only |
-
-Only one flag may be set. If both are provided, the node will fail to start.
+| Flag | Use case |
+|------|----------|
+| `-remoteSignerJWKSUrl <url>` | JWKS endpoint for JWT verification (RS256), recommended for production (with jwt-issuer or any JWKS-serving auth service) |
 
 ### JWT claims format
 
@@ -170,9 +167,7 @@ Optional/informational claims (present for future use, not yet enforced by the s
 - `spending_cap_wei`: Per-session spending limit in wei.
 - `tier`: User service tier.
 
-### Verification modes
-
-**JWKS (asymmetric, recommended for production)**
+### JWT verification (JWKS only)
 
 The auth website publishes its public keys at a JWKS endpoint. The remote signer fetches and caches these keys, with automatic background refresh (every hour). This is the standard approach for production deployments where the auth website uses RSA or EC keys to sign JWTs.
 
@@ -182,20 +177,6 @@ The auth website publishes its public keys at a JWKS endpoint. The remote signer
   -remoteSignerJWKSUrl https://livepeer.ai/.well-known/jwks.json \
   -network mainnet \
   -httpAddr 0.0.0.0:7936 \
-  -ethUrl <eth-rpc-url> \
-  -ethPassword <password-or-password-file>
-```
-
-**HMAC (symmetric, for development/testing)**
-
-A shared secret known to both the auth website and the remote signer. Simpler to set up but requires secure secret distribution.
-
-```bash
-./livepeer \
-  -remoteSigner \
-  -remoteSignerAuthSecret "my-shared-secret-at-least-32-bytes" \
-  -network mainnet \
-  -httpAddr 127.0.0.1:7936 \
   -ethUrl <eth-rpc-url> \
   -ethPassword <password-or-password-file>
 ```
@@ -275,7 +256,7 @@ JWTs are validated locally, so there is no real-time revocation mechanism. Secur
 
 ## Operational + security guidance
 
-When authentication is enabled (via `-remoteSignerJWKSUrl` or `-remoteSignerAuthSecret`), the remote signer can be safely exposed to authenticated end-users over the network. All requests are validated against the JWT before any signing operation is performed. The authenticated user's Ethereum address is logged with each request for audit purposes.
+When authentication is enabled (via `-remoteSignerJWKSUrl`), the remote signer can be safely exposed to authenticated end-users over the network. All requests are validated against the JWT before any signing operation is performed. The authenticated user's Ethereum address is logged with each request for audit purposes.
 
 When authentication is **not** enabled, remote signers should sit behind infrastructure controls rather than being exposed directly to end-users. For example, run the remote signer on a private network or behind an authenticated proxy. Do not expose an unauthenticated remote signer to end-users. Run the remote signer close to gateways on a private network; protect it like you would an internal wallet service.
 
