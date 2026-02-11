@@ -88,7 +88,7 @@ const (
 	Capability_ImageToText                Capability = 34
 	Capability_LiveVideoToVideo           Capability = 35
 	Capability_TextToSpeech               Capability = 36
-	Capability_BYOC                       Capability = 37
+	Capability_BYOCExternal               Capability = 37
 )
 
 var CapabilityNameLookup = map[Capability]string{
@@ -130,7 +130,7 @@ var CapabilityNameLookup = map[Capability]string{
 	Capability_ImageToText:                "Image to text",
 	Capability_LiveVideoToVideo:           "Live video to video",
 	Capability_TextToSpeech:               "Text to speech",
-	Capability_BYOC:                       "byoc",
+	Capability_BYOCExternal:               "byoc_external",
 }
 
 var CapabilityTestLookup = map[Capability]CapabilityTest{
