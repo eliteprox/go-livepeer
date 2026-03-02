@@ -357,6 +357,17 @@ func getJobOrchestrators(ctx context.Context, node *core.LivepeerNode, capabilit
 		tokenReq.Header.Set(jobEthAddressHdr, base64.StdEncoding.EncodeToString(reqSenderStr))
 		tokenReq.Header.Set(jobCapabilityHdr, capability)
 
+		// Pass the options filter so the orchestrator can return capacity that
+		// reflects only runners matching the filter (avoids wasted round-trips).
+		if len(params.OptionsFilter) > 0 {
+			filterJSON, err := json.Marshal(params.OptionsFilter)
+			if err == nil {
+				q := tokenReq.URL.Query()
+				q.Set("options_filter", string(filterJSON))
+				tokenReq.URL.RawQuery = q.Encode()
+			}
+		}
+
 		resp, err := sendJobReqWithTimeout(tokenReq, respTimeout)
 		if err != nil {
 			clog.Errorf(ctx, "failed to get token from Orchestrator err=%v", err)
@@ -419,17 +430,34 @@ func getJobOrchestrators(ctx context.Context, node *core.LivepeerNode, capabilit
 		select {
 		case token := <-tokenCh:
 			if token.AvailableCapacity > 0 {
-				jobTokens = append(jobTokens, token)
+				if core.AnyOptionsMatch(params.OptionsFilter, token.WorkerOptions) {
+					if clog.V(common.VERBOSE) {
+						filterJSON, _ := json.Marshal(params.OptionsFilter)
+						optsJSON, _ := json.Marshal(token.WorkerOptions)
+						clog.V(common.VERBOSE).Infof(ctx, "job selection orch=%v accepted filter=%v all_options=%v", token.ServiceAddr, string(filterJSON), string(optsJSON))
+					}
+					jobTokens = append(jobTokens, token)
+				} else {
+					if clog.V(common.VERBOSE) {
+						filterJSON, _ := json.Marshal(params.OptionsFilter)
+						optsJSON, _ := json.Marshal(token.WorkerOptions)
+						clog.V(common.VERBOSE).Infof(ctx, "job selection orch=%v rejected filter=%v worker_options=%v", token.ServiceAddr, string(filterJSON), string(optsJSON))
+					}
+				}
+			} else {
+				clog.V(common.VERBOSE).Infof(ctx, "job selection orch=%v skipped no_capacity", token.ServiceAddr)
 			}
 			nbResp++
 		case <-errCh:
 			nbResp++
 		case <-tokensCtx.Done():
 			//searchTimeout reached, return tokens received
+			clog.V(common.VERBOSE).Infof(ctx, "job selection timeout reached selected=%v", len(jobTokens))
 			return jobTokens, nil
 		}
 	}
 
+	clog.V(common.VERBOSE).Infof(ctx, "job selection selected=%v from=%v orchs", len(jobTokens), nbResp)
 	// received enough tokens or all responses arrived
 	return jobTokens, nil
 }
@@ -458,6 +486,10 @@ func genOrchestratorReq(b common.Broadcaster) (*net.OrchestratorRequest, error) 
 	return &net.OrchestratorRequest{Address: b.Address().Bytes(), Sig: sig}, nil
 }
 
+// getToken fetches a job token from a specific orchestrator URL with exponential
+// backoff retry. It is used during stream reconnect / orchestrator failover where
+// a brief retry is acceptable. For fan-out discovery use getOrchJobToken instead,
+// which has no retry so that slow orchestrators don't stall the whole selection.
 func getToken(ctx context.Context, respTimeout time.Duration, orchUrl, capability, sender, senderSig string) (*JobToken, error) {
 	start := time.Now()
 	tokenReq, err := http.NewRequestWithContext(ctx, "GET", orchUrl+"/process/token", nil)
@@ -514,4 +546,101 @@ func getToken(ctx context.Context, respTimeout time.Duration, orchUrl, capabilit
 		return nil, err
 	}
 	return nil, fmt.Errorf("failed to get token from Orchestrator after %d attempts", attempt)
+}
+
+// FetchWorkerOptions fans out GET /process/options to each orchestrator URL,
+// merges the results, and returns the deduplicated union. timeout controls
+// how long to wait for all responses.
+// FetchCapabilityOptions calls GET /process/options on a single orchestrator URL
+// and returns the per-capability options map. Returns nil on any error.
+func FetchCapabilityOptions(ctx context.Context, orchURL string, timeout time.Duration) map[string][]map[string]interface{} {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, strings.TrimRight(orchURL, "/")+"/process/options", nil)
+	if err != nil {
+		clog.Errorf(ctx, "FetchCapabilityOptions orch=%v failed to create request err=%v", orchURL, err)
+		return nil
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		clog.V(common.VERBOSE).Infof(ctx, "FetchCapabilityOptions orch=%v request failed err=%v", orchURL, err)
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		clog.V(common.VERBOSE).Infof(ctx, "FetchCapabilityOptions orch=%v non-200 status=%v", orchURL, resp.StatusCode)
+		return nil
+	}
+	var opts map[string][]map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&opts); err != nil {
+		clog.Errorf(ctx, "FetchCapabilityOptions orch=%v failed to decode response err=%v", orchURL, err)
+		return nil
+	}
+	if clog.V(common.VERBOSE) {
+		optsJSON, _ := json.Marshal(opts)
+		clog.Infof(ctx, "FetchCapabilityOptions orch=%v received options=%v", orchURL, string(optsJSON))
+	}
+	return opts
+}
+
+// FetchWorkerOptions fans out GET /process/options to each orchestrator URL,
+// merges the results, and returns the deduplicated union as a flat list.
+// Used by the gateway's /process/options aggregator for model discovery.
+func FetchWorkerOptions(ctx context.Context, orchs []common.OrchestratorLocalInfo, timeout time.Duration) []map[string]interface{} {
+	type orchResult struct {
+		capOpts map[string][]map[string]interface{}
+	}
+	resultCh := make(chan orchResult, len(orchs))
+
+	orchURLs := make([]string, len(orchs))
+	for i, o := range orchs {
+		orchURLs[i] = o.URL.String()
+	}
+	clog.Infof(ctx, "FetchWorkerOptions querying num_orchs=%v urls=%v", len(orchs), orchURLs)
+
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for _, orch := range orchs {
+		go func(orchURL string) {
+			resultCh <- orchResult{capOpts: FetchCapabilityOptions(reqCtx, orchURL, timeout)}
+		}(orch.URL.String())
+	}
+
+	// Collect and flatten all per-capability options; deduplicate by JSON fingerprint.
+	seen := make(map[string]struct{})
+	all := make([]map[string]interface{}, 0)
+	for range orchs {
+		res := <-resultCh
+		for _, opts := range res.capOpts {
+			for _, opt := range opts {
+				key, _ := json.Marshal(opt)
+				if _, dup := seen[string(key)]; !dup {
+					seen[string(key)] = struct{}{}
+					all = append(all, opt)
+				}
+			}
+		}
+	}
+	clog.Infof(ctx, "FetchWorkerOptions total_unique=%v", len(all))
+	return all
+}
+
+// GetWorkerOptions fans out GET /process/options to every Orchestrator in the
+// pool, merges the results, and returns the deduplicated union as a JSON array.
+// This is the endpoint called by the gateway-proxy's /v1/models handler.
+func (bsg *BYOCGatewayServer) GetWorkerOptions() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		orchs := bsg.node.OrchestratorPool.GetInfos()
+		all := FetchWorkerOptions(r.Context(), orchs, 2*time.Second)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(all)
+	})
 }

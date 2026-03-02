@@ -234,6 +234,17 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 			wantMsg:    "missing pixels or job type",
 		},
 		{
+			name: "byoc-request without inPixels",
+			req: func() RemotePaymentRequest {
+				r := baseReq()
+				r.Type = RemoteType_ByocRequest
+				r.InPixels = 0
+				return r
+			}(),
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "byoc-request requires inPixels",
+		},
+		{
 			name: "num tickets exceeds limit",
 			req: func() RemotePaymentRequest {
 				r := baseReq()

@@ -28,6 +28,7 @@ const HTTPStatusRefreshSession = 480
 const HTTPStatusPriceExceeded = 481
 const HTTPStatusNoTickets = 482
 const RemoteType_LiveVideoToVideo = "lv2v"
+const RemoteType_ByocRequest = "byoc-request"
 const PipelineLiveVideoToVideo = "live-video-to-video"
 
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
@@ -166,10 +167,17 @@ type RemotePaymentRequest struct {
 	// Set if an ID is needed to tie into orch accounting for a session. Optional
 	ManifestID string
 
-	// Number of pixels to generate a ticket for. Required if `type` is not set.
+	// Number of pixels to generate a ticket for.
+	// Required if `type` is not set or is "byoc-request".
+	// For BYOC (PixelsPerUnit denominates wei-per-second) this value represents
+	// seconds of compute to pre-fund.
 	InPixels int64 `json:"inPixels"`
 
-	// Job type to automatically calculate payments. Valid values: `lv2v`. Optional.
+	// Job type. Valid values: `lv2v`, `byoc-request`. Optional.
+	// - "lv2v": the signer auto-calculates pixels from wall-clock video metadata.
+	// - "byoc-request": no auto-calculation; the caller supplies InPixels explicitly.
+	//   Used for BYOC batch requests (`POST /process/request/{capability}`).
+	// - "" (empty): generic pre-computed path; the caller supplies InPixels explicitly.
 	Type string `json:"type"`
 
 	// Capabilities to include in the ticket. Optional; may be set for the lv2v job type.
@@ -380,7 +388,8 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		lastUpdate = now
 	}
 	billableSecs := now.Sub(lastUpdate).Seconds()
-	if req.Type == RemoteType_LiveVideoToVideo {
+	switch req.Type {
+	case RemoteType_LiveVideoToVideo:
 		info := defaultSegInfo
 		if billableSecs <= 0 {
 			// preload with 60 seconds of data for LV2V
@@ -388,7 +397,19 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		}
 		pixelsPerSec := float64(info.Height) * float64(info.Width) * float64(info.FPS)
 		pixels = int64(pixelsPerSec * billableSecs) // pixels to charge for
-	} else if req.Type != "" {
+	case RemoteType_ByocRequest:
+		// BYOC batch request: caller computes and supplies the compute budget as
+		// InPixels. Under BYOC pricing, PixelsPerUnit denominates wei-per-second,
+		// so InPixels here represents "seconds of compute to pay for."
+		if req.InPixels <= 0 {
+			err = errors.New("byoc-request requires inPixels")
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+		// pixels already initialised from req.InPixels above.
+	case "":
+		// Generic pre-computed path: caller must supply InPixels explicitly.
+	default:
 		err = errors.New("invalid job type")
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
 		return

@@ -118,7 +118,8 @@ type JobRequestDetails struct {
 
 type JobParameters struct {
 	// Gateway
-	Orchestrators JobOrchestratorsFilter `json:"orchestrators,omitempty"` // list of orchestrators to use for the job
+	Orchestrators JobOrchestratorsFilter `json:"orchestrators,omitempty"`  // list of orchestrators to use for the job
+	OptionsFilter map[string]string      `json:"options_filter,omitempty"` // worker options capability filter
 
 	// Orchestrator
 	EnableVideoIngress bool `json:"enable_video_ingress,omitempty"`
@@ -132,12 +133,13 @@ type JobOrchestratorsFilter struct {
 }
 
 type JobToken struct {
-	SenderAddress     *JobSender        `json:"sender_address,omitempty"`
-	TicketParams      *net.TicketParams `json:"ticket_params,omitempty"`
-	Balance           int64             `json:"balance,omitempty"`
-	Price             *net.PriceInfo    `json:"price,omitempty"`
-	ServiceAddr       string            `json:"service_addr,omitempty"`
-	AvailableCapacity int64             `json:"available_capacity,omitempty"`
+	SenderAddress     *JobSender             `json:"sender_address,omitempty"`
+	TicketParams      *net.TicketParams      `json:"ticket_params,omitempty"`
+	Balance           int64                  `json:"balance,omitempty"`
+	Price             *net.PriceInfo         `json:"price,omitempty"`
+	ServiceAddr       string                 `json:"service_addr,omitempty"`
+	AvailableCapacity int64                  `json:"available_capacity,omitempty"`
+	WorkerOptions     []map[string]interface{} `json:"worker_options,omitempty"`
 
 	LastNonce uint32
 }

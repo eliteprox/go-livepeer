@@ -18,6 +18,7 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/golang/glog"
+	"github.com/livepeer/go-livepeer/byoc"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
@@ -281,12 +282,42 @@ func (s *LivepeerServer) getNetworkCapabilitiesHandler() http.Handler {
 				respond500(w, "network capabilities not available")
 			}
 
-			networkCapabilities := &networkCapabilitiesResponse{
-				CapabilitiesNames: core.CapabilityNameLookup,
-				Orchestrators:     orchNetworkCaps,
+			// Fan out to each orchestrator to fetch per-capability worker options.
+			// Build shallow copies of each cached struct so we never mutate the
+			// shared pointers held by LivepeerNode.NetworkCapabilities.
+			const optionsTimeout = 2 * time.Second
+			type result struct {
+				uri  string
+				opts map[string][]map[string]interface{}
+			}
+			resultCh := make(chan result, len(orchNetworkCaps))
+			for _, orch := range orchNetworkCaps {
+				go func(uri string) {
+					resultCh <- result{uri: uri, opts: byoc.FetchCapabilityOptions(r.Context(), uri, optionsTimeout)}
+				}(orch.OrchURI)
+			}
+			optsByURI := make(map[string]map[string][]map[string]interface{}, len(orchNetworkCaps))
+			for range orchNetworkCaps {
+				res := <-resultCh
+				if len(res.opts) > 0 {
+					optsByURI[res.uri] = res.opts
+				}
+			}
+			glog.Infof("getNetworkCapabilities fetched capability_options num_orchs=%v num_with_options=%v", len(orchNetworkCaps), len(optsByURI))
+
+			// Copy each cached struct before setting CapabilityOptions so we
+			// never write back to the pointers owned by the discovery cache.
+			responseOrchNetworkCaps := make([]*common.OrchNetworkCapabilities, len(orchNetworkCaps))
+			for i, orch := range orchNetworkCaps {
+				cp := *orch
+				cp.CapabilityOptions = optsByURI[orch.OrchURI]
+				responseOrchNetworkCaps[i] = &cp
 			}
 
-			respondJson(w, networkCapabilities)
+			respondJson(w, &networkCapabilitiesResponse{
+				CapabilitiesNames: core.CapabilityNameLookup,
+				Orchestrators:     responseOrchNetworkCaps,
+			})
 			return
 		} else {
 			respond400(w, "Node must be gateway node to get network capabilities")

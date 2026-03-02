@@ -48,7 +48,7 @@ func TestExternalCapabilities_RegisterCapability(t *testing.T) {
 
 		// Verify it's in the map
 		assert.Contains(t, extCaps.Capabilities, "test-cap")
-		assert.Equal(t, cap, extCaps.Capabilities["test-cap"])
+		assert.Equal(t, cap, extCaps.Capabilities["test-cap"]["http://localhost:8000"])
 	})
 
 	t.Run("Register with missing price_scaling", func(t *testing.T) {
@@ -115,7 +115,7 @@ func TestExternalCapabilities_RegisterCapability(t *testing.T) {
 		assert.Equal(t, int64(2000), updatedCap.PriceScaling)
 
 		// Verify it's in the map
-		storedCap := extCaps.Capabilities["update-test"]
+		storedCap := extCaps.Capabilities["update-test"]["http://localhost:9000"]
 		assert.Equal(t, "http://localhost:9000", storedCap.Url)
 		assert.Equal(t, 10, storedCap.Capacity)
 		assert.NotNil(t, storedCap.price)

@@ -1684,8 +1684,8 @@ func TestBYOCExternalCapsPriceInfo(t *testing.T) {
 
 	addr1 := "0x1000000000000000000000000000000000000000"
 
-	n.ExternalCapabilities.Capabilities["my-service"] = &ExternalCapability{Name: "my-service"}
-	n.ExternalCapabilities.Capabilities["another-service"] = &ExternalCapability{Name: "another-service"}
+	n.ExternalCapabilities.Capabilities["my-service"] = map[string]*ExternalCapability{"http://localhost": {Name: "my-service"}}
+	n.ExternalCapabilities.Capabilities["another-service"] = map[string]*ExternalCapability{"http://localhost": {Name: "another-service"}}
 	n.SetPriceForExternalCapability("default", "my-service", big.NewRat(10, 1))
 	n.SetPriceForExternalCapability("default", "another-service", big.NewRat(20, 1))
 
@@ -1730,7 +1730,7 @@ func TestBYOCExternalCapsSenderPricing(t *testing.T) {
 	addr2 := "0x2000000000000000000000000000000000000000"
 	addr3 := "0x3000000000000000000000000000000000000000"
 
-	n.ExternalCapabilities.Capabilities["my-service"] = &ExternalCapability{Name: "my-service"}
+	n.ExternalCapabilities.Capabilities["my-service"] = map[string]*ExternalCapability{"http://localhost": {Name: "my-service"}}
 	n.SetPriceForExternalCapability("default", "my-service", big.NewRat(10, 1))
 	n.SetPriceForExternalCapability(addr1, "my-service", big.NewRat(100, 1))
 	n.SetPriceForExternalCapability(addr2, "my-service", big.NewRat(200, 1))
@@ -1776,7 +1776,7 @@ func TestBYOCExternalCapsPriceEdgeCases(t *testing.T) {
 			if tt.nilExtCaps {
 				n.ExternalCapabilities = nil
 			} else {
-				n.ExternalCapabilities.Capabilities["svc"] = &ExternalCapability{Name: "svc"}
+				n.ExternalCapabilities.Capabilities["svc"] = map[string]*ExternalCapability{"http://localhost": {Name: "svc"}}
 				n.SetPriceForExternalCapability("default", "svc", tt.price)
 			}
 

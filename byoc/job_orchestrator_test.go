@@ -768,6 +768,77 @@ func TestGetJobToken_Success(t *testing.T) {
 	assert.Equal(t, int64(1000), token.Balance)
 }
 
+func TestGetJobToken_IncludesWorkerOptions(t *testing.T) {
+	mockVerifySig := func(addr ethcommon.Address, msg string, sig []byte) bool {
+		return true
+	}
+	mockJobPriceInfo := func(addr ethcommon.Address, cap string) (*net.PriceInfo, error) {
+		return &net.PriceInfo{PricePerUnit: 10, PixelsPerUnit: 1}, nil
+	}
+	mockTicketParams := func(addr ethcommon.Address, price *net.PriceInfo) (*net.TicketParams, error) {
+		return &net.TicketParams{
+			Recipient:       ethcommon.HexToAddress("0x1111111111111111111111111111111111111111").Bytes(),
+			FaceValue:       big.NewInt(1000).Bytes(),
+			WinProb:         big.NewInt(1).Bytes(),
+			Seed:            big.NewInt(1234).Bytes(),
+			ExpirationBlock: big.NewInt(100000).Bytes(),
+		}, nil
+	}
+
+	mockJobOrch := newMockJobOrchestrator()
+	mockJobOrch.verifySignature = mockVerifySig
+	mockJobOrch.jobPriceInfo = mockJobPriceInfo
+	mockJobOrch.ticketParams = mockTicketParams
+
+	node := mockJobLivepeerNode()
+	if node.ExternalCapabilities == nil {
+		node.ExternalCapabilities = core.NewExternalCapabilities()
+	}
+	node.ExternalCapabilities.Capabilities["test-cap"] = map[string]*core.ExternalCapability{
+		"http://runner-a:8000": {Name: "test-cap", WorkerOptions: []map[string]interface{}{{"model": "llama-3", "vram_gb": 24.0}}},
+		"http://runner-b:8000": {Name: "test-cap", WorkerOptions: []map[string]interface{}{{"model": "mistral-7b", "vram_gb": 16.0}}},
+	}
+	mockJobOrch.node = node
+
+	bso := &BYOCOrchestratorServer{
+		node: node,
+		orch: mockJobOrch,
+	}
+
+	gateway := newMockJobOrchestrator()
+	sig, _ := gateway.Sign([]byte(hexutil.Encode(gateway.Address().Bytes())))
+	js := &JobSender{Addr: hexutil.Encode(gateway.Address().Bytes()), Sig: hexutil.Encode(sig)}
+	jsBytes, _ := json.Marshal(js)
+	jsBase64 := base64.StdEncoding.EncodeToString(jsBytes)
+
+	req := httptest.NewRequest("GET", "/process/token", nil)
+	req.Header.Set(jobEthAddressHdr, jsBase64)
+	req.Header.Set(jobCapabilityHdr, "test-cap")
+	w := httptest.NewRecorder()
+
+	handler := bso.GetJobToken()
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var token JobToken
+	body, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(body, &token)
+	assert.Len(t, token.WorkerOptions, 2)
+	// Order is non-deterministic (Go map iteration); check by model name.
+	optsByModel := map[string]map[string]interface{}{}
+	for _, opt := range token.WorkerOptions {
+		if m, ok := opt["model"].(string); ok {
+			optsByModel[m] = opt
+		}
+	}
+	assert.Contains(t, optsByModel, "llama-3")
+	assert.Equal(t, float64(24), optsByModel["llama-3"]["vram_gb"])
+	assert.Contains(t, optsByModel, "mistral-7b")
+	assert.Equal(t, float64(16), optsByModel["mistral-7b"]["vram_gb"])
+}
+
 func TestProcessJob_MethodNotAllowed(t *testing.T) {
 	bso := &BYOCOrchestratorServer{
 		node: mockJobLivepeerNode(),

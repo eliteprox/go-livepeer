@@ -177,4 +177,5 @@ type OrchNetworkCapabilities struct {
 	PriceInfo          *net.PriceInfo             `json:"price_info"`
 	CapabilitiesPrices []*net.PriceInfo           `json:"capabilities_prices"`
 	Hardware           []*net.HardwareInformation `json:"hardware"`
+	CapabilityOptions  map[string][]map[string]interface{} `json:"capability_options,omitempty"`
 }

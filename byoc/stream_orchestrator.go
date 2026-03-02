@@ -149,7 +149,7 @@ func (bso *BYOCOrchestratorServer) StartStream() http.Handler {
 			return
 		}
 
-		req, err := bso.createWorkerReq(ctx, workerRoute, orchJob.Req.Capability, orchJob.Req.ID, bytes.NewBuffer(reqBodyBytes))
+		req, err := bso.createWorkerReq(ctx, workerRoute, orchJob.Req.CapabilityUrl, orchJob.Req.Capability, orchJob.Req.ID, bytes.NewBuffer(reqBodyBytes))
 		if err != nil {
 			clog.Errorf(ctx, "failed to create worker request err=%v", err)
 			respondWithError(w, "Failed to create worker request", http.StatusInternalServerError)
@@ -236,7 +236,7 @@ func (bso *BYOCOrchestratorServer) monitorOrchStream(job *orchJob) {
 			return
 		case <-pmtTicker.C:
 			// Check payment status
-			extCap, ok := bso.node.ExternalCapabilities.Capabilities[capability]
+			extCap, ok := bso.node.ExternalCapabilities.GetCapability(capability)
 			if !ok {
 				clog.Errorf(ctx, "Capability not found for payment monitoring, exiting monitoring capability=%s", capability)
 				return
@@ -274,7 +274,7 @@ func (bso *BYOCOrchestratorServer) monitorOrchStream(job *orchJob) {
 			// if not, send stop to worker and exit monitoring
 			stream, exists := bso.node.ExternalCapabilities.GetStream(streamID)
 			if !exists {
-				req, err := bso.createWorkerReq(ctx, job.Req.CapabilityUrl+"/stream/stop", job.Req.Capability, streamID, nil)
+				req, err := bso.createWorkerReq(ctx, job.Req.CapabilityUrl+"/stream/stop", job.Req.CapabilityUrl, job.Req.Capability, streamID, nil)
 				if err != nil {
 					clog.Errorf(ctx, "Error creating request to worker %v: %v", job.Req.CapabilityUrl, err)
 					return
@@ -327,7 +327,7 @@ func (bso *BYOCOrchestratorServer) StopStream() http.Handler {
 		r.Body.Close()
 
 		workerRoute := orchJob.Req.CapabilityUrl + "/stream/stop"
-		req, err := bso.createWorkerReq(ctx, workerRoute, orchJob.Req.Capability, jobDetails.StreamId, bytes.NewBuffer(body))
+		req, err := bso.createWorkerReq(ctx, workerRoute, orchJob.Req.CapabilityUrl, orchJob.Req.Capability, jobDetails.StreamId, bytes.NewBuffer(body))
 		if err != nil {
 			clog.Errorf(ctx, "failed to create /stream/stop request to worker err=%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -378,7 +378,7 @@ func (bso *BYOCOrchestratorServer) UpdateStream() http.Handler {
 		r.Body.Close()
 
 		workerRoute := orchJob.Req.CapabilityUrl + "/stream/params"
-		req, err := bso.createWorkerReq(ctx, workerRoute, orchJob.Req.Capability, jobDetails.StreamId, bytes.NewBuffer(body))
+		req, err := bso.createWorkerReq(ctx, workerRoute, orchJob.Req.CapabilityUrl, orchJob.Req.Capability, jobDetails.StreamId, bytes.NewBuffer(body))
 		if err != nil {
 			clog.Errorf(ctx, "failed to create /stream/params request to worker err=%v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -402,7 +402,7 @@ func (bso *BYOCOrchestratorServer) UpdateStream() http.Handler {
 
 // createWorkerReq creates an HTTP request to send to the worker.
 // handles setting stream id and auth headers for worker
-func (bso *BYOCOrchestratorServer) createWorkerReq(ctx context.Context, workerRoute, capability, streamId string, body io.Reader) (*http.Request, error) {
+func (bso *BYOCOrchestratorServer) createWorkerReq(ctx context.Context, workerRoute, capabilityUrl, capability, streamId string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", workerRoute, body)
 	if err != nil {
 		return nil, err
@@ -414,8 +414,8 @@ func (bso *BYOCOrchestratorServer) createWorkerReq(ctx context.Context, workerRo
 	}
 
 	// Add Authorization header if auth token is set for this capability
-	if extCap, ok := bso.node.ExternalCapabilities.Capabilities[capability]; ok {
-		if extCap.AuthToken != "" {
+	if nameMap, ok := bso.node.ExternalCapabilities.Capabilities[capability]; ok {
+		if extCap, ok := nameMap[capabilityUrl]; ok && extCap.AuthToken != "" {
 			req.Header.Add("Authorization", "Bearer "+extCap.AuthToken)
 		}
 	}

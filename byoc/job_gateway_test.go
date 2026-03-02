@@ -370,6 +370,50 @@ func TestSubmitJob_OrchestratorSelectionParams(t *testing.T) {
 
 }
 
+func TestGetJobOrchestrators_OptionsFilter(t *testing.T) {
+	newTokenServer := func(options []map[string]interface{}) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := createMockJobToken("http://" + r.Host)
+			token.WorkerOptions = options
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(token)
+		}))
+	}
+
+	// s1: has llama-3 with 24GB — should pass filter
+	s1 := newTokenServer([]map[string]interface{}{{"model": "llama-3", "vram_gb": float64(24)}, {"model": "mistral-7b", "vram_gb": float64(24)}})
+	// s2: only mistral-7b — should be rejected
+	s2 := newTokenServer([]map[string]interface{}{{"model": "mistral-7b", "vram_gb": float64(24)}})
+	// s3: llama-3 but only 8GB — should be rejected
+	s3 := newTokenServer([]map[string]interface{}{{"model": "llama-3", "vram_gb": float64(8)}})
+	defer s1.Close()
+	defer s2.Close()
+	defer s3.Close()
+
+	node := mockJobLivepeerNode()
+	node.OrchestratorPool = newStubOrchestratorPool(node, []string{s1.URL, s2.URL, s3.URL})
+
+	params := JobParameters{
+		OptionsFilter: map[string]string{
+			"model":   "llama-3",
+			"vram_gb": ">=16",
+		},
+	}
+
+	tokens, err := getJobOrchestrators(
+		context.Background(),
+		node,
+		"test-capability",
+		params,
+		300*time.Millisecond,
+		200*time.Millisecond,
+	)
+	assert.NoError(t, err)
+	assert.Len(t, tokens, 1)
+	assert.Equal(t, "llama-3", tokens[0].WorkerOptions[0]["model"])
+	assert.Equal(t, float64(24), tokens[0].WorkerOptions[0]["vram_gb"])
+}
+
 func TestSetupGatewayJob(t *testing.T) {
 	// Prepare a JobRequest with valid fields
 	jobDetails := JobRequestDetails{StreamId: "test-stream"}

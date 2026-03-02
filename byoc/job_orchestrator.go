@@ -65,6 +65,7 @@ func (bs *BYOCOrchestratorServer) RegisterCapability() http.Handler {
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
+		cap.SetWorkerOptions(cap.WorkerOptions)
 		clog.Infof(context.TODO(), "registered capability remoteAddr=%v capability=%v url=%v price=%v auth_token=%v", remoteAddr, cap.Name, cap.Url, big.NewRat(cap.PricePerUnit, cap.PriceScaling), cap.AuthToken != "")
 	})
 }
@@ -87,26 +88,57 @@ func (bs *BYOCOrchestratorServer) UnregisterCapability() http.Handler {
 			return
 		}
 		defer r.Body.Close()
-		extCapName := string(body)
 		remoteAddr := getRemoteAddr(r)
 
-		err = orch.RemoveExternalCapability(extCapName)
-		if err != nil {
-			clog.Errorf(context.TODO(), "Error removing capability: %v", err)
-			http.Error(w, fmt.Sprintf("Error removing capability: %v", err), http.StatusBadRequest)
-			return
+		// Try JSON {name, url} format first; fall back to plain capability name string.
+		var unregReq struct {
+			Name string `json:"name"`
+			Url  string `json:"url"`
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(fmt.Sprintf("Error removing capability: %v", err)))
+		capName := string(body)
+		var removeErr error
+		if jsonErr := json.Unmarshal(body, &unregReq); jsonErr == nil && unregReq.Name != "" {
+			capName = unregReq.Name
+			if unregReq.Url != "" {
+				bs.node.ExternalCapabilities.RemoveCapabilityRunner(unregReq.Name, unregReq.Url)
+			} else {
+				removeErr = orch.RemoveExternalCapability(capName)
+			}
+		} else {
+			removeErr = orch.RemoveExternalCapability(capName)
+		}
+		if removeErr != nil {
+			clog.Errorf(context.TODO(), "Error removing capability: %v", removeErr)
+			http.Error(w, fmt.Sprintf("Error removing capability: %v", removeErr), http.StatusBadRequest)
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
-		clog.Infof(context.TODO(), "removed capability remoteAddr=%v capability=%v", remoteAddr, extCapName)
+		clog.Infof(context.TODO(), "removed capability remoteAddr=%v capability=%v", remoteAddr, capName)
+	})
+}
+
+// GetWorkerOptions returns the cached WorkerOptions for all registered
+// capabilities on this Orchestrator. Called by the Gateway's /process/options aggregator.
+func (bso *BYOCOrchestratorServer) GetWorkerOptions() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		options := map[string][]map[string]interface{}{}
+		if bso.node != nil && bso.node.ExternalCapabilities != nil {
+			if all := bso.node.ExternalCapabilities.GetAllWorkerOptionsByCapability(); len(all) > 0 {
+				options = all
+			}
+		}
+		optsJSON, _ := json.Marshal(options)
+		clog.Infof(r.Context(), "GetWorkerOptions remoteAddr=%v num_capabilities=%v options=%v", r.RemoteAddr, len(options), string(optsJSON))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(options)
 	})
 }
 
@@ -146,10 +178,24 @@ func (bso *BYOCOrchestratorServer) GetJobToken() http.Handler {
 			return
 		}
 
+		// Read optional options filter from query param. When present, the
+		// returned AvailableCapacity will reflect only runners matching the
+		// filter, avoiding wasted round-trips to orchestrators whose capacity
+		// is held by runners that don't match the gateway's requirements.
+		var optionsFilter map[string]string
+		if filterStr := r.URL.Query().Get("options_filter"); filterStr != "" {
+			_ = json.Unmarshal([]byte(filterStr), &optionsFilter)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		jobToken := JobToken{SenderAddress: nil, TicketParams: nil, Balance: 0, Price: nil}
 
-		capacity := orch.CheckExternalCapabilityCapacity(jobCapsHdr)
+		var capacity int64
+		if bso.node != nil && bso.node.ExternalCapabilities != nil {
+			capacity = bso.node.ExternalCapabilities.GetFilteredCapacity(jobCapsHdr, optionsFilter)
+		} else {
+			capacity = orch.CheckExternalCapabilityCapacity(jobCapsHdr)
+		}
 
 		senderAddr := ethcommon.HexToAddress(jobSenderAddr.Addr)
 
@@ -190,6 +236,11 @@ func (bso *BYOCOrchestratorServer) GetJobToken() http.Handler {
 			capBalInt = capBalInt / 1000
 		}
 
+		var workerOptions []map[string]interface{}
+		if bso.node != nil && bso.node.ExternalCapabilities != nil {
+			workerOptions = bso.node.ExternalCapabilities.GetCapabilityWorkerOptions(jobCapsHdr)
+		}
+
 		jobToken = JobToken{
 			SenderAddress:     jobSenderAddr,
 			TicketParams:      ticketParams,
@@ -197,6 +248,7 @@ func (bso *BYOCOrchestratorServer) GetJobToken() http.Handler {
 			Price:             jobPrice,
 			ServiceAddr:       orch.ServiceURI().String(),
 			AvailableCapacity: capacity,
+			WorkerOptions:     workerOptions,
 		}
 
 		//send response indicating compatible
@@ -274,8 +326,8 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 	req.Header.Add("Content-Type", r.Header.Get("Content-Type"))
 
 	// Add Authorization header if auth token is set for this capability
-	if extCap, ok := bso.node.ExternalCapabilities.Capabilities[orchJob.Req.Capability]; ok {
-		if extCap.AuthToken != "" {
+	if nameMap, ok := bso.node.ExternalCapabilities.Capabilities[orchJob.Req.Capability]; ok {
+		if extCap, ok := nameMap[orchJob.Req.CapabilityUrl]; ok && extCap.AuthToken != "" {
 			req.Header.Add("Authorization", "Bearer "+extCap.AuthToken)
 		}
 	}
@@ -571,11 +623,53 @@ func (bso *BYOCOrchestratorServer) verifyJobCreds(ctx context.Context, jobCreds 
 		return nil, errSegSig
 	}
 
-	if reserveCapacity && bso.orch.ReserveExternalCapabilityCapacity(jobData.Capability) != nil {
-		return nil, errZeroCapacity
+	// Use the node's ExternalCapabilities runner registry only when runners are
+	// actually registered for this capability; otherwise fall back to the orch
+	// interface (used by tests and legacy deployments).
+	var hasRunners bool
+	if bso.node != nil && bso.node.ExternalCapabilities != nil {
+		_, hasRunners = bso.node.ExternalCapabilities.GetCapability(jobData.Capability)
 	}
+	if hasRunners {
+		// Extract options filter from job parameters so runner selection respects
+		// the same constraint the gateway used to pick this orchestrator.
+		var jobParams JobParameters
+		_ = json.Unmarshal([]byte(jobData.Parameters), &jobParams)
+		filter := jobParams.OptionsFilter
 
-	jobData.CapabilityUrl = bso.orch.GetUrlForCapability(jobData.Capability)
+		// Atomically select and (optionally) reserve the best matching runner,
+		// ensuring Reserve and GetUrl always refer to the same runner.
+		if reserveCapacity {
+			runner, err := bso.node.ExternalCapabilities.SelectAndReserveRunner(jobData.Capability, filter)
+			if err != nil {
+				return nil, errZeroCapacity
+			}
+			jobData.CapabilityUrl = runner.Url
+			if clog.V(common.VERBOSE) {
+				filterJSON, _ := json.Marshal(filter)
+				optsJSON, _ := json.Marshal(runner.WorkerOptions)
+				clog.V(common.VERBOSE).Infof(ctx, "orch runner selected capability=%v url=%v load=%v capacity=%v filter=%v worker_options=%v",
+					jobData.Capability, runner.Url, runner.Load, runner.Capacity, string(filterJSON), string(optsJSON))
+			}
+		} else {
+			runner := bso.node.ExternalCapabilities.SelectRunner(jobData.Capability, filter)
+			if runner != nil {
+				jobData.CapabilityUrl = runner.Url
+				if clog.V(common.VERBOSE) {
+					filterJSON, _ := json.Marshal(filter)
+					optsJSON, _ := json.Marshal(runner.WorkerOptions)
+					clog.V(common.VERBOSE).Infof(ctx, "orch runner selected (no reserve) capability=%v url=%v load=%v capacity=%v filter=%v worker_options=%v",
+						jobData.Capability, runner.Url, runner.Load, runner.Capacity, string(filterJSON), string(optsJSON))
+				}
+			}
+		}
+	} else {
+		// Fallback to interface methods (e.g. in tests with mocked orchestrator)
+		if reserveCapacity && bso.orch.ReserveExternalCapabilityCapacity(jobData.Capability) != nil {
+			return nil, errZeroCapacity
+		}
+		jobData.CapabilityUrl = bso.orch.GetUrlForCapability(jobData.Capability)
+	}
 
 	return jobData, nil
 }

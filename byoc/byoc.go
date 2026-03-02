@@ -178,6 +178,9 @@ func (bsg *BYOCGatewayServer) registerRoutes() {
 
 	//TODO: add WHEP support
 
+	// Worker options aggregation
+	bsg.httpMux.Handle("GET /process/options", bsg.GetWorkerOptions())
+
 	// Job submission routes for batch processing
 	bsg.httpMux.Handle("/process/request/", bsg.SubmitJob())
 }
@@ -226,6 +229,7 @@ func (bso *BYOCOrchestratorServer) registerRoutes() {
 	// Job submission routes for batch processing
 	bso.httpMux.Handle("/process/request/", bso.ProcessJob())
 	bso.httpMux.Handle("/process/token", bso.GetJobToken())
+	bso.httpMux.Handle("GET /process/options", bso.GetWorkerOptions())
 	bso.httpMux.Handle("/capability/register", bso.RegisterCapability())
 	bso.httpMux.Handle("/capability/unregister", bso.UnregisterCapability())
 	// Stream routes
