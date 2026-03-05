@@ -1,0 +1,47 @@
+# Full stack with orchestrator in Docker. Use when not debugging orchestrator on host.
+# Run: docker compose -f docker-compose.full.yml up
+services:
+  orchestrator:
+    image: byoc_livepeer
+    container_name: byoc_orchestrator
+    command: >-
+      -network arbitrum-one-mainnet -orchestrator
+      -ethUrl https://arb1.arbitrum.io/rpc -ethPassword secret-password
+      -pricePerUnit 1 -serviceAddr=byoc_orchestrator:8935 -orchSecret=orch-secret
+      -v 6
+  gateway:
+    image: byoc_livepeer
+    container_name: byoc_gateway
+    command: >-
+      -network arbitrum-one-mainnet -gateway
+      -ethUrl https://arb1.arbitrum.io/rpc -ethPassword secret-password
+      -orchAddr=byoc_orchestrator:8935 -httpAddr=0.0.0.0:9935 -httpIngest
+      -v 6
+    depends_on:
+      - orchestrator
+    ports:
+      - "9935:9935"
+  worker:
+    image: byoc_reverse_text
+    container_name: byoc_reverse_text
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    ports:
+      - "5000:5000"
+    depends_on:
+      - orchestrator
+  register:
+    image: byoc_register_capability
+    build:
+      context: .
+      dockerfile: Dockerfile.register
+    environment:
+      ORCHESTRATOR_URL: "http://byoc_orchestrator:8935"
+      WORKER_URL: "http://byoc_reverse_text:5000"
+    depends_on:
+      - worker
+
+networks:
+  default:
+    name: byoc_livepeer_network
