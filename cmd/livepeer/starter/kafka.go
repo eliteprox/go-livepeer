@@ -22,5 +22,6 @@ func startKafkaProducer(cfg LivepeerConfig) error {
 		*cfg.KafkaPassword,
 		*cfg.KafkaGatewayTopic,
 		gatewayHost,
+		*cfg.KafkaSASLMechanism,
 	)
 }

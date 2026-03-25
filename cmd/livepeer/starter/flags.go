@@ -147,6 +147,7 @@ func NewLivepeerConfig(fs *flag.FlagSet) LivepeerConfig {
 	cfg.KafkaUsername = fs.String("kafkaUser", *cfg.KafkaUsername, "Kafka Username")
 	cfg.KafkaPassword = fs.String("kafkaPassword", *cfg.KafkaPassword, "Kafka Password")
 	cfg.KafkaGatewayTopic = fs.String("kafkaGatewayTopic", *cfg.KafkaGatewayTopic, "Kafka Topic used to send gateway logs")
+	cfg.KafkaSASLMechanism = fs.String("kafkaSASLMechanism", *cfg.KafkaSASLMechanism, "Kafka SASL mechanism: plain, scram-sha-256, scram-sha-512")
 
 	return cfg
 }

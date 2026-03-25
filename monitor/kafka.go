@@ -10,7 +10,9 @@ import (
 	"github.com/golang/glog"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
+	"github.com/segmentio/kafka-go/sasl/scram"
 )
 
 const (
@@ -54,8 +56,8 @@ type PipelineStatus struct {
 
 var kafkaProducer *KafkaProducer
 
-func InitKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress string) error {
-	producer, err := newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress)
+func InitKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism string) error {
+	producer, err := newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism)
 	if err != nil {
 		return err
 	}
@@ -64,22 +66,32 @@ func InitKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress s
 	return nil
 }
 
-func newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress string) (*KafkaProducer, error) {
+func newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism string) (*KafkaProducer, error) {
 	dialer := &kafka.Dialer{
 		Timeout:   KafkaRequestTimeout,
 		DualStack: true,
 	}
 
 	if user != "" && password != "" {
-		tls := &tls.Config{
-			MinVersion: tls.VersionTLS12,
+		var mechanism sasl.Mechanism
+		switch saslMechanism {
+		case "scram-sha-256":
+			m, err := scram.Mechanism(scram.SHA256, user, password)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create SCRAM-SHA-256 mechanism: %w", err)
+			}
+			mechanism = m
+		case "scram-sha-512":
+			m, err := scram.Mechanism(scram.SHA512, user, password)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create SCRAM-SHA-512 mechanism: %w", err)
+			}
+			mechanism = m
+		default:
+			mechanism = &plain.Mechanism{Username: user, Password: password}
 		}
-		sasl := &plain.Mechanism{
-			Username: user,
-			Password: password,
-		}
-		dialer.SASLMechanism = sasl
-		dialer.TLS = tls
+		dialer.SASLMechanism = mechanism
+		dialer.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
 	writer := kafka.NewWriter(kafka.WriterConfig{
