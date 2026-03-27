@@ -26,7 +26,9 @@ import (
 
 const HTTPStatusRefreshSession = 480
 const HTTPStatusPriceExceeded = 481
+const HTTPStatusNoTickets = 482
 const RemoteType_LiveVideoToVideo = "lv2v"
+const PipelineLiveVideoToVideo = "live-video-to-video"
 const RemoteType_BYOC = "byoc"
 
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
@@ -113,9 +115,19 @@ func (ls *LivepeerServer) SignBYOCJobRequest(w http.ResponseWriter, r *http.Requ
 
 // StartRemoteSignerServer starts the HTTP server for remote signer mode
 func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
-	// Register the remote signer endpoint
+	// Register the remote signer endpoints
 	ls.HTTPMux.Handle("POST /sign-orchestrator-info", http.HandlerFunc(ls.SignOrchestratorInfo))
 	ls.HTTPMux.Handle("POST /generate-live-payment", http.HandlerFunc(ls.GenerateLivePayment))
+	if ls.LivepeerNode.RemoteDiscovery {
+		rdp := RemoteDiscoveryConfig{
+			Pool:     ls.LivepeerNode.OrchestratorPool,
+			Node:     ls.LivepeerNode,
+			Interval: ls.LivepeerNode.LiveAICapReportInterval,
+		}.New()
+		ls.HTTPMux.Handle("GET /discover-orchestrators", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ls.GetOrchestrators(rdp, w, r)
+		}))
+	}
 	ls.HTTPMux.Handle("POST /sign-byoc-job", http.HandlerFunc(ls.SignBYOCJobRequest))
 
 	// Start the HTTP server
@@ -180,6 +192,7 @@ type RemotePaymentState struct {
 	Balance              string
 	InitialPricePerUnit  int64
 	InitialPixelsPerUnit int64
+	SequenceNumber       uint64
 }
 
 type RemotePaymentStateSig struct {
@@ -246,7 +259,8 @@ func verifyStateSignature(ls *LivepeerServer, stateBytes []byte, sig []byte) err
 
 // GenerateLivePayment handles remote generation of a payment for live streams.
 func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Request) {
-	ctx := clog.AddVal(r.Context(), "request_id", string(core.RandomManifestID()))
+	requestID := string(core.RandomManifestID())
+	ctx := clog.AddVal(r.Context(), "request_id", requestID)
 	remoteAddr := getRemoteAddr(r)
 	clog.Info(ctx, "Live payment request", "ip", remoteAddr)
 
@@ -297,7 +311,8 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		err   error
 	)
 	reqState, reqSig := req.State.State, req.State.Sig
-	if len(reqState) != 0 || len(reqSig) != 0 {
+	hasState := len(reqState) != 0 || len(reqSig) != 0
+	if hasState {
 		if err := verifyStateSignature(ls, reqState, reqSig); err != nil {
 			err = errors.New("invalid sig")
 			respondJsonError(ctx, w, err, http.StatusBadRequest)
@@ -313,6 +328,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			respondJsonError(ctx, w, err, http.StatusBadRequest)
 			return
 		}
+		state.SequenceNumber++
 	} else {
 		state = &RemotePaymentState{
 			StateID:              string(core.RandomManifestID()),
@@ -323,16 +339,18 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	}
 
 	stateID := core.ManifestID(state.StateID)
-	clog.AddVal(ctx, "state_id", state.StateID)
+	ctx = clog.AddVal(ctx, "state_id", state.StateID)
+	ctx = clog.AddVal(ctx, "seqNo", fmt.Sprintf("%d", state.SequenceNumber))
 
 	manifestID := req.ManifestID
 	if manifestID == "" {
-		if req.Type == RemoteType_BYOC && req.Capability != "" {
-			// For BYOC, use capability name as manifest ID for shared balance tracking
-			manifestID = req.Capability
-		} else {
-			manifestID = string(core.RandomManifestID())
+		if hasState {
+			// Required for lv2v so stateful requests stay tied to the same id.
+			err := errors.New("missing manifestID")
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
 		}
+		manifestID = string(core.RandomManifestID())
 	}
 	ctx = clog.AddVal(ctx, "manifest_id", manifestID)
 
@@ -405,17 +423,20 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	}
 
 	pixels := req.InPixels
+	now := time.Now()
+	lastUpdate := state.LastUpdate
+	if lastUpdate.IsZero() {
+		lastUpdate = now
+	}
+	billableSecs := now.Sub(lastUpdate).Seconds()
 	if req.Type == RemoteType_LiveVideoToVideo {
 		info := defaultSegInfo
-		now := time.Now()
-		lastUpdate := state.LastUpdate
-		if lastUpdate.IsZero() {
-			// preload with 60 seconds of data by default
-			lastUpdate = now.Add(-60 * time.Second)
+		if billableSecs <= 0 {
+			// preload with 60 seconds of data for LV2V
+			billableSecs = (60 * time.Second).Seconds()
 		}
 		pixelsPerSec := float64(info.Height) * float64(info.Width) * float64(info.FPS)
-		secSinceLastProcessed := now.Sub(lastUpdate).Seconds()
-		pixels = int64(pixelsPerSec * secSinceLastProcessed)
+		pixels = int64(pixelsPerSec * billableSecs) // pixels to charge for
 	} else if req.Type == RemoteType_BYOC {
 		// BYOC uses time-based pricing: price per unit of time (typically seconds)
 		// The pixelsPerUnit in the price info represents the time scaling factor
@@ -468,6 +489,15 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		err = fmt.Errorf("Failed to update balance: %w", err)
 		respondJsonError(ctx, w, err, http.StatusInternalServerError)
+		return
+	}
+	if balUpdate.NumTickets <= 0 {
+		// No new tickets are needed when reserved balance already covers the
+		// required minimum credit (fee with ticket EV as the floor). Caller
+		// should retry once balance has been run down further.
+		err = errors.New("no tickets")
+		clog.Errorf(ctx, "No tickets")
+		respondJsonError(ctx, w, err, HTTPStatusNoTickets)
 		return
 	}
 	if balUpdate.NumTickets > 100 {
@@ -547,6 +577,39 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 
 	clog.Info(ctx, "Signed", "numTickets", balUpdate.NumTickets, "nonce", state.SenderNonce, "fee", fee.FloatString(0), "sessionId", oInfo.AuthToken.SessionId, "pmSessionId", sess.PMSessionID, "oldBalance", oldBal.FloatString(0), "newBalance", newBal.FloatString(0))
 
+	if monitor.Enabled {
+		sessionStatus := "continuing"
+		if state.SequenceNumber == 0 {
+			sessionStatus = "new"
+		}
+		pipeline := ""
+		if req.Type == RemoteType_LiveVideoToVideo {
+			pipeline = PipelineLiveVideoToVideo
+		}
+		// NB: This could could drop events if tha Kafka queue is full!
+		monitor.SendQueueEventAsync("create_signed_ticket", map[string]interface{}{
+			"session_id":         state.StateID,
+			"session_status":     sessionStatus,
+			"pipeline":           pipeline,
+			"request_id":         requestID,
+			"orch_address":       orchAddr.Hex(),
+			"orch_url":           oInfo.Transcoder,
+			"manifest_id":        manifestID,
+			"pm_session_id":      sess.PMSessionID,
+			"current_time":       now.UTC(),
+			"current_time_unix":  now.UTC().UnixMilli(),
+			"previous_time":      lastUpdate.UTC(),
+			"previous_time_unix": lastUpdate.UTC().UnixMilli(),
+			"billable_secs":      billableSecs,
+			"pixels":             pixels,
+			"session_balance":    newBal.FloatString(0),
+			"computed_fee":       fee.FloatString(0),
+			"cost_per_pixel":     orchPrice.FloatString(10),
+			"sequence_number":    state.SequenceNumber,
+			"num_tickets":        balUpdate.NumTickets,
+		})
+	}
+
 	// Return payment (tickets), creds and signed state
 	resp := RemotePaymentResponse{
 		Payment:  payment,
@@ -588,4 +651,49 @@ func GetOrchInfoSig(remoteSignerHost *url.URL) (*OrchInfoSigResponse, error) {
 	}
 
 	return &signerResp, nil
+}
+
+type discoveryResponse struct {
+	Address      string   `json:"address,omitempty"`
+	Score        float32  `json:"score,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// GetOrchestrators returns the configured orchestrators in webhook-compatible format
+func (ls *LivepeerServer) GetOrchestrators(pool *remoteDiscoveryPool, w http.ResponseWriter, r *http.Request) {
+	ctx := clog.AddVal(r.Context(), "request_id", string(core.RandomManifestID()))
+	remoteAddr := getRemoteAddr(r)
+	clog.Info(ctx, "Get orchestrators request", "ip", remoteAddr)
+
+	if pool == nil {
+		respondJsonError(ctx, w, errors.New("no orchestrator pool configured"), http.StatusServiceUnavailable)
+		return
+	}
+
+	if pool.Size() == 0 {
+		respondJsonError(ctx, w, errors.New("cache empty"), http.StatusServiceUnavailable)
+		return
+	}
+
+	caps := r.URL.Query()["caps"]
+	filteredCaps := make([]string, 0, len(caps))
+	for _, capability := range caps {
+		if capability != "" {
+			filteredCaps = append(filteredCaps, capability)
+		}
+	}
+
+	infos := pool.Orchestrators(filteredCaps)
+	resp := make([]discoveryResponse, 0, len(infos))
+	for _, cached := range infos {
+		od := cached.OD
+		resp = append(resp, discoveryResponse{
+			Address:      od.LocalInfo.URL.String(),
+			Score:        od.LocalInfo.Score,
+			Capabilities: append([]string(nil), cached.Capabilities...),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
