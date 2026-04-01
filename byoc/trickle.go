@@ -86,6 +86,19 @@ func (bsg *BYOCGatewayServer) startTricklePublish(ctx context.Context, url *url.
 		thisSeq, atMax := slowOrchChecker.BeginSegment()
 		if atMax {
 			clog.Infof(ctx, "Orchestrator is slow - terminating")
+			monitor.SendQueueEventAsync("stream_trace", map[string]interface{}{
+				"type":               "stream_slow_orchestrator_detected",
+				"stream_id":          params.liveParams.streamID,
+				"request_id":         params.liveParams.requestID,
+				"pipeline_id":        params.liveParams.pipelineID,
+				"in_flight_segments": thisSeq,
+				"max_allowed":        maxInflightSegments,
+				"swap_triggered":     true,
+				"orchestrator_info": map[string]interface{}{
+					"address": orchAddr,
+					"url":     orchUrl,
+				},
+			})
 			bsg.suspendOrchestrator(ctx, params)
 			cancel()
 			stopProcessing(ctx, params, errors.New("orchestrator is slow"))

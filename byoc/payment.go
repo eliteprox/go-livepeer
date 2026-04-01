@@ -14,6 +14,7 @@ import (
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
 	"github.com/livepeer/go-livepeer/eth"
+	"github.com/livepeer/go-livepeer/monitor"
 	"github.com/livepeer/go-livepeer/net"
 	"github.com/livepeer/go-livepeer/pm"
 	"github.com/pkg/errors"
@@ -97,6 +98,21 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 	minBal := new(big.Rat).Mul(price, big.NewRat(120, 1)) //minimum 2 minute balance, Orchestrator requires 1 minute.  Use 2 to have a buffer.
 	balance, diffToOrch, minBalCovered, resetToZero := compareAndUpdateBalance(bsg, orchAddr, jobReq.Capability, orchBal, minBal)
 
+	monitor.SendQueueEventAsync("job_payment", map[string]interface{}{
+		"type":              "payment_balance_sync",
+		"capability":        jobReq.Capability,
+		"sender":            sender.Hex(),
+		"orchestrator_addr": orchAddr.Hex(),
+		"balance":           balance.FloatString(3),
+		"diff":              diffToOrch.FloatString(3),
+		"min_bal_covered":   minBalCovered,
+		"reset_to_zero":     resetToZero,
+		"orchestrator_info": map[string]interface{}{
+			"address": orchAddr.Hex(),
+			"url":     orchToken.ServiceAddr,
+		},
+	})
+
 	if diffToOrch.Sign() != 0 {
 		clog.Infof(ctx, "Updated balance for sender=%v capability=%v by %v to match Orchestrator reported balance %v", sender.Hex(), jobReq.Capability, diffToOrch.FloatString(3), orchBal.FloatString(3))
 	}
@@ -114,6 +130,17 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 
 	if !createTickets {
 		clog.V(common.DEBUG).Infof(ctx, "No payment required, using balance=%v", balance.FloatString(3))
+		monitor.SendQueueEventAsync("job_payment", map[string]interface{}{
+			"type":         "payment_created",
+			"capability":   jobReq.Capability,
+			"sender":       sender.Hex(),
+			"balance":      balance.FloatString(3),
+			"with_tickets": false,
+			"orchestrator_info": map[string]interface{}{
+				"address": orchAddr.Hex(),
+				"url":     orchToken.ServiceAddr,
+			},
+		})
 		return "", nil
 	} else {
 		ticketParams := pmTicketParams(orchToken.TicketParams)
@@ -179,6 +206,17 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 		return "", err
 	}
 
+	monitor.SendQueueEventAsync("job_payment", map[string]interface{}{
+		"type":         "payment_created",
+		"capability":   jobReq.Capability,
+		"sender":       sender.Hex(),
+		"balance":      balance.FloatString(3),
+		"with_tickets": true,
+		"orchestrator_info": map[string]interface{}{
+			"address": orchAddr.Hex(),
+			"url":     orchToken.ServiceAddr,
+		},
+	})
 	return base64.StdEncoding.EncodeToString(data), nil
 }
 

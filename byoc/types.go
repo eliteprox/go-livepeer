@@ -91,6 +91,9 @@ type BYOCStreamPipeline struct {
 
 	DataWriter *media.SegmentWriter
 
+	// StartTime is set when the pipeline is created; used to compute stream lifetime.
+	StartTime time.Time
+
 	streamCtx     context.Context
 	streamCancel  context.CancelCauseFunc
 	streamParams  byocAIRequestParams

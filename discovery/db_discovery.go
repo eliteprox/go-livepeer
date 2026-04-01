@@ -2,8 +2,12 @@ package discovery
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"math/big"
+	gonet "net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -22,6 +26,23 @@ import (
 	"github.com/golang/glog"
 )
 
+// orchDrainHTTPClient is used for /events/drain calls to orchestrators.
+// Orchestrators commonly use self-signed TLS certificates (the same pattern
+// as the rest of the Livepeer gateway→orchestrator HTTP path), so certificate
+// verification is intentionally skipped.
+var orchDrainTLSConfig = &tls.Config{InsecureSkipVerify: true}
+var orchDrainHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig: orchDrainTLSConfig,
+		DialTLSContext: func(ctx context.Context, network, addr string) (gonet.Conn, error) {
+			tlsDialer := &tls.Dialer{Config: orchDrainTLSConfig}
+			return tlsDialer.DialContext(ctx, network, addr)
+		},
+		ForceAttemptHTTP2: true,
+	},
+	Timeout: 5 * time.Second,
+}
+
 type ticketParamsValidator interface {
 	ValidateTicketParams(ticketParams *pm.TicketParams) error
 }
@@ -36,6 +57,7 @@ type DBOrchestratorPoolCache struct {
 	discoveryTimeout      time.Duration
 	ignoreCapacityCheck   bool
 	node                  *core.LivepeerNode
+	cursorStore           *EventCursorStore
 }
 
 func NewDBOrchestratorPoolCache(ctx context.Context, node *core.LivepeerNode, rm common.RoundsManager, orchBlacklist []string, discoveryTimeout time.Duration, liveAICapReportInterval time.Duration) (*DBOrchestratorPoolCache, error) {
@@ -65,6 +87,11 @@ func (cfg DBOrchestratorPoolCacheConfig) New() (*DBOrchestratorPoolCache, error)
 		return nil, fmt.Errorf("could not create DBOrchestratorPoolCache: LivepeerEthClient is nil")
 	}
 
+	var cursorStore *EventCursorStore
+	if node.Database != nil {
+		cursorStore = NewEventCursorStore(node.Database.DBHandle())
+	}
+
 	dbo := &DBOrchestratorPoolCache{
 		store:                 node.Database,
 		lpEth:                 node.Eth,
@@ -75,6 +102,7 @@ func (cfg DBOrchestratorPoolCacheConfig) New() (*DBOrchestratorPoolCache, error)
 		discoveryTimeout:      cfg.DiscoveryTimeout,
 		ignoreCapacityCheck:   cfg.IgnoreCapacityCheck,
 		node:                  node,
+		cursorStore:           cursorStore,
 	}
 
 	cacheOrchestrators := func() error {
@@ -475,7 +503,119 @@ func (dbo *DBOrchestratorPoolCache) cacheOrchInfos() error {
 	// Report AI container capacity metrics
 	reportAICapacityFromNetworkCapabilities(orchNetworkCapabilities)
 
+	// Drain lifecycle events from each orchestrator (Mechanism 3 — cursor drain)
+	if dbo.cursorStore != nil {
+		for _, cap := range orchNetworkCapabilities {
+			go dbo.drainOrchEvents(cap)
+		}
+	}
+
 	return nil
+}
+
+// orchPendingEvent mirrors byoc.PendingEvent for decoding the /events/drain response.
+type orchPendingEvent struct {
+	ID        int64           `json:"id"`
+	UUID      string          `json:"uuid"`
+	Type      string          `json:"type"`
+	Data      json.RawMessage `json:"data"`
+	CreatedAt int64           `json:"created_at_ms"`
+}
+
+// drainOrchEvents fetches lifecycle events from an orchestrator's /events/drain endpoint
+// since the last stored cursor, enriches them with orchestrator_info, and publishes to Kafka.
+func (dbo *DBOrchestratorPoolCache) drainOrchEvents(cap *common.OrchNetworkCapabilities) {
+	orchURL := cap.OrchURI
+	if orchURL == "" {
+		return
+	}
+
+	cursorMs, err := dbo.cursorStore.Get(orchURL)
+	if err != nil {
+		glog.V(4).Infof("discovery: drainOrchEvents failed to get cursor orch=%v err=%v", orchURL, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := fetchOrchEventsSince(ctx, orchURL, cursorMs)
+	if err != nil {
+		if err != errOrchEventsDrainNotSupported {
+			glog.V(4).Infof("discovery: drainOrchEvents failed to fetch events orch=%v err=%v", orchURL, err)
+		}
+		return
+	}
+
+	if len(events) == 0 {
+		return
+	}
+
+	for _, e := range events {
+		topic := lifecycleEventTopic(e.Type)
+		if topic == "" {
+			continue
+		}
+		var data map[string]interface{}
+		if jsonErr := json.Unmarshal(e.Data, &data); jsonErr != nil {
+			continue
+		}
+		data["orchestrator_info"] = map[string]string{
+			"address": cap.Address,
+			"url":     orchURL,
+		}
+		// Preserve the UUID assigned at orch insert time for consumer dedup.
+		data["id"] = e.UUID
+		monitor.SendQueueEventAsync(topic, data)
+	}
+
+	// Advance cursor to the created_at of the last event received.
+	newCursor := events[len(events)-1].CreatedAt
+	if setErr := dbo.cursorStore.Set(orchURL, newCursor); setErr != nil {
+		glog.V(4).Infof("discovery: drainOrchEvents failed to set cursor orch=%v err=%v", orchURL, setErr)
+	}
+}
+
+// errOrchEventsDrainNotSupported is returned when an orchestrator does not
+// expose the /events/drain endpoint (404). Callers treat this as a silent
+// no-op rather than a warning-level error.
+var errOrchEventsDrainNotSupported = fmt.Errorf("events/drain not supported by orchestrator")
+
+// fetchOrchEventsSince calls GET {orchURI}/events/drain?since_ms={sinceMs} and decodes the response.
+// Returns errOrchEventsDrainNotSupported on 404 so callers can distinguish
+// "old orchestrator" (expected) from real network/server errors.
+func fetchOrchEventsSince(ctx context.Context, orchURI string, sinceMs int64) ([]orchPendingEvent, error) {
+	u := strings.TrimRight(orchURI, "/") + fmt.Sprintf("/events/drain?since_ms=%d", sinceMs)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := orchDrainHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errOrchEventsDrainNotSupported
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, u)
+	}
+	var events []orchPendingEvent
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// lifecycleEventTopic maps orchestrator lifecycle event types to their Kafka topic names.
+func lifecycleEventTopic(eventType string) string {
+	switch eventType {
+	case "worker_registered", "worker_unregistered", "worker_capacity_exhausted":
+		return "worker_lifecycle"
+	default:
+		return ""
+	}
 }
 
 func reportAICapacityFromNetworkCapabilities(orchNetworkCapabilities []*common.OrchNetworkCapabilities) {

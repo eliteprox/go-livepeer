@@ -22,6 +22,7 @@ import (
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
+	"github.com/livepeer/go-livepeer/monitor"
 	"github.com/livepeer/go-livepeer/net"
 	"github.com/pkg/errors"
 )
@@ -74,9 +75,30 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 		}
 
 		start := time.Now()
+		monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+			"type":       "job_gateway_submitted",
+			"request_id": gatewayJob.Job.Req.ID,
+			"capability": gatewayJob.Job.Req.Capability,
+			"orchestrator_info": map[string]interface{}{
+				"address": orchToken.Address(),
+				"url":     orchToken.ServiceAddr,
+			},
+		})
 		resp, code, err := bsg.sendJobToOrch(ctx, r, gatewayJob.Job.Req, gatewayJob.SignedJobReq, orchToken, workerResourceRoute, body)
 		if err != nil {
 			clog.Errorf(ctx, "job not able to be processed by Orchestrator %v err=%v ", orchToken.ServiceAddr, err.Error())
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":        "job_gateway_completed",
+				"request_id":  gatewayJob.Job.Req.ID,
+				"capability":  gatewayJob.Job.Req.Capability,
+				"success":     false,
+				"error":       err.Error(),
+				"duration_ms": time.Since(start).Milliseconds(),
+				"orchestrator_info": map[string]interface{}{
+					"address": orchToken.Address(),
+					"url":     orchToken.ServiceAddr,
+				},
+			})
 			continue
 		}
 
@@ -123,6 +145,19 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 
 			gatewayBalance := updateGatewayBalance(bsg.node, orchToken, gatewayJob.Job.Req.Capability, time.Since(start))
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance)
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":        "job_gateway_completed",
+				"request_id":  gatewayJob.Job.Req.ID,
+				"capability":  gatewayJob.Job.Req.Capability,
+				"success":     true,
+				"error":       nil,
+				"duration_ms": time.Since(start).Milliseconds(),
+				"http_status": code,
+				"orchestrator_info": map[string]interface{}{
+					"address": orchToken.Address(),
+					"url":     orchToken.ServiceAddr,
+				},
+			})
 			w.Write(data)
 			return
 		} else {
@@ -189,6 +224,20 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 			gatewayBalance := updateGatewayBalance(bsg.node, orchToken, gatewayJob.Job.Req.Capability, time.Since(start))
 
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance.FloatString(0))
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":        "job_gateway_completed",
+				"request_id":  gatewayJob.Job.Req.ID,
+				"capability":  gatewayJob.Job.Req.Capability,
+				"success":     true,
+				"error":       nil,
+				"duration_ms": time.Since(start).Milliseconds(),
+				"http_status": code,
+				"streaming":   true,
+				"orchestrator_info": map[string]interface{}{
+					"address": orchToken.Address(),
+					"url":     orchToken.ServiceAddr,
+				},
+			})
 		}
 	}
 }
@@ -230,7 +279,47 @@ func (bsg *BYOCGatewayServer) sendJobToOrch(ctx context.Context, r *http.Request
 		return nil, http.StatusBadRequest, err
 	}
 
+	// Mechanism 2: extract orchestrator-side events from X-Livepeer-Events header
+	if raw := resp.Header.Get("X-Livepeer-Events"); raw != "" {
+		var orchEvents []struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if jsonErr := json.Unmarshal([]byte(raw), &orchEvents); jsonErr == nil {
+			for _, e := range orchEvents {
+				topic := orchEventTopic(e.Type)
+				if topic == "" {
+					continue
+				}
+				var enriched map[string]interface{}
+				json.Unmarshal(e.Data, &enriched)
+				if enriched == nil {
+					enriched = make(map[string]interface{})
+				}
+				enriched["orchestrator_info"] = map[string]string{
+					"address": orchToken.Address(),
+					"url":     orchToken.ServiceAddr,
+				}
+				monitor.SendQueueEventAsync(topic, enriched)
+			}
+		}
+	}
+
 	return resp, resp.StatusCode, nil
+}
+
+// orchEventTopic maps orchestrator-side event types to their Kafka topic names.
+func orchEventTopic(eventType string) string {
+	switch {
+	case eventType == "job_credential_verify_result":
+		return "job_auth"
+	case strings.HasPrefix(eventType, "job_orchestrator_"):
+		return "job_orchestrator"
+	case strings.HasPrefix(eventType, "payment_"):
+		return "job_payment"
+	default:
+		return ""
+	}
 }
 
 func (bs *BYOCGatewayServer) sendPayment(ctx context.Context, orchPmtUrl, capability, jobReq, payment string) (int, error) {
@@ -285,12 +374,34 @@ func (bsg *BYOCGatewayServer) setupGatewayJob(ctx context.Context, jobReqHdr str
 		//get pool of Orchestrators that can do the job
 		orchs, err = getJobOrchestrators(ctx, bsg.node, jobReq.Capability, jobParams, jobReq.OrchSearchTimeout, jobReq.OrchSearchRespTimeout)
 		if err != nil {
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":       "job_orchestrator_discovery_result",
+				"capability": jobReq.Capability,
+				"success":    false,
+				"selected":   0,
+				"error":      err.Error(),
+			})
 			return nil, errors.New(fmt.Sprintf("Unable to find orchestrators for capability %v err=%v", jobReq.Capability, err))
 		}
 
 		if len(orchs) == 0 {
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":       "job_orchestrator_discovery_result",
+				"capability": jobReq.Capability,
+				"success":    false,
+				"selected":   0,
+				"error":      "no orchestrators found",
+			})
 			return nil, errors.New(fmt.Sprintf("No orchestrators found for capability %v", jobReq.Capability))
 		}
+
+		monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+			"type":       "job_orchestrator_discovery_result",
+			"capability": jobReq.Capability,
+			"success":    true,
+			"selected":   len(orchs),
+			"error":      nil,
+		})
 	}
 
 	job := orchJob{Req: jobReq,
@@ -371,6 +482,14 @@ func getJobOrchestrators(ctx context.Context, node *core.LivepeerNode, capabilit
 		resp, err := sendJobReqWithTimeout(tokenReq, respTimeout)
 		if err != nil {
 			clog.Errorf(ctx, "failed to get token from Orchestrator err=%v", err)
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":       "job_orchestrator_token_fetch_result",
+				"orch_url":   orchUrl.String(),
+				"capability": capability,
+				"success":    false,
+				"latency_ms": time.Since(start).Milliseconds(),
+				"error":      err.Error(),
+			})
 			errCh <- err
 			return
 		}
@@ -378,7 +497,17 @@ func getJobOrchestrators(ctx context.Context, node *core.LivepeerNode, capabilit
 
 		if resp.StatusCode != http.StatusOK {
 			clog.Errorf(ctx, "Failed to get token from Orchestrator %v err=%v", orchUrl.String(), err)
-			errCh <- fmt.Errorf("failed to get token from Orchestrator")
+			fetchErr := fmt.Errorf("failed to get token from Orchestrator status=%d", resp.StatusCode)
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":        "job_orchestrator_token_fetch_result",
+				"orch_url":    orchUrl.String(),
+				"capability":  capability,
+				"success":     false,
+				"latency_ms":  time.Since(start).Milliseconds(),
+				"http_status": resp.StatusCode,
+				"error":       fetchErr.Error(),
+			})
+			errCh <- fetchErr
 			return
 		}
 
@@ -388,6 +517,14 @@ func getJobOrchestrators(ctx context.Context, node *core.LivepeerNode, capabilit
 		token, err := io.ReadAll(resp.Body)
 		if err != nil {
 			clog.Errorf(ctx, "Failed to read token from Orchestrator %v err=%v", orchUrl.String(), err)
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":       "job_orchestrator_token_fetch_result",
+				"orch_url":   orchUrl.String(),
+				"capability": capability,
+				"success":    false,
+				"latency_ms": latency.Milliseconds(),
+				"error":      err.Error(),
+			})
 			errCh <- err
 			return
 		}
@@ -395,10 +532,31 @@ func getJobOrchestrators(ctx context.Context, node *core.LivepeerNode, capabilit
 		err = json.Unmarshal(token, &jobToken)
 		if err != nil {
 			clog.Errorf(ctx, "Failed to unmarshal token from Orchestrator %v err=%v", orchUrl.String(), err)
+			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+				"type":       "job_orchestrator_token_fetch_result",
+				"orch_url":   orchUrl.String(),
+				"capability": capability,
+				"success":    false,
+				"latency_ms": latency.Milliseconds(),
+				"error":      err.Error(),
+			})
 			errCh <- err
 			return
 		}
 
+		monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
+			"type":               "job_orchestrator_token_fetch_result",
+			"orch_url":           orchUrl.String(),
+			"capability":         capability,
+			"success":            true,
+			"latency_ms":         latency.Milliseconds(),
+			"available_capacity": jobToken.AvailableCapacity,
+			"error":              nil,
+			"orchestrator_info": map[string]interface{}{
+				"address": jobToken.Address(),
+				"url":     jobToken.ServiceAddr,
+			},
+		})
 		tokenCh <- jobToken
 	}
 

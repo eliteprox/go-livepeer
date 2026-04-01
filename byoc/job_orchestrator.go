@@ -66,7 +66,18 @@ func (bs *BYOCOrchestratorServer) RegisterCapability() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 		cap.SetWorkerOptions(cap.WorkerOptions)
-		clog.Infof(context.TODO(), "registered capability remoteAddr=%v capability=%v url=%v price=%v auth_token=%v", remoteAddr, cap.Name, cap.Url, big.NewRat(cap.PricePerUnit, cap.PriceScaling), cap.AuthToken != "")
+		optsJSON, _ := json.Marshal(cap.WorkerOptions)
+		clog.Infof(context.TODO(), "registered capability remoteAddr=%v capability=%v url=%v price=%v auth_token=%v worker_options=%v", remoteAddr, cap.Name, cap.Url, big.NewRat(cap.PricePerUnit, cap.PriceScaling), cap.AuthToken != "", string(optsJSON))
+		if bs.pendingEvents != nil {
+			bs.pendingEvents.Enqueue("worker_registered", map[string]interface{}{
+				"capability":            cap.Name,
+				"worker_url":            cap.Url,
+				"price_per_unit":        cap.PricePerUnit,
+				"price_scaling":         cap.PriceScaling,
+				"worker_options_count":  len(cap.WorkerOptions),
+				"worker_options":        cap.WorkerOptions,
+			})
+		}
 	})
 }
 
@@ -116,6 +127,17 @@ func (bs *BYOCOrchestratorServer) UnregisterCapability() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 		clog.Infof(context.TODO(), "removed capability remoteAddr=%v capability=%v", remoteAddr, capName)
+		if bs.pendingEvents != nil {
+			reason := "explicit_deregister"
+			if unregReq.Url != "" {
+				reason = "runner_replacement"
+			}
+			bs.pendingEvents.Enqueue("worker_unregistered", map[string]interface{}{
+				"capability": capName,
+				"worker_url": unregReq.Url,
+				"reason":     reason,
+			})
+		}
 	})
 }
 
@@ -275,10 +297,27 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 	remoteAddr := getRemoteAddr(r)
 	ctx = clog.AddVal(ctx, "client_ip", remoteAddr)
 	orch := bso.orch
+
+	// Inject a per-request event accumulator so nested functions can
+	// attach events that will be flushed into X-Livepeer-Events header.
+	acc := newOrchEventAccumulator()
+	ctx = withOrchEventAccumulator(ctx, acc)
+
+	// flushEventsHeader writes accumulated events to the response header.
+	// Must be called before any w.WriteHeader() / http.Error() call.
+	flushEventsHeader := func() {
+		if events := acc.Flush(); len(events) > 0 {
+			if b, err := marshalOrchEvents(events); err == nil {
+				w.Header().Set("X-Livepeer-Events", b)
+			}
+		}
+	}
+
 	// check the prompt sig from the request
 	// confirms capacity available before processing payment info
 	orchJob, err := bso.setupOrchJob(ctx, r, true)
 	if err != nil {
+		flushEventsHeader()
 		if err == errNoCapabilityCapacity {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		} else {
@@ -286,6 +325,18 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 		}
 		return
 	}
+
+	// job_orchestrator_received: job accepted, worker selected
+	acc.Add("job_orchestrator_received", map[string]interface{}{
+		"request_id":     orchJob.Req.ID,
+		"sender_address": orchJob.Req.Sender,
+		"capability":     orchJob.Req.Capability,
+		"worker_url":     orchJob.Req.CapabilityUrl,
+		"timeout_ms":     int64(orchJob.Req.Timeout) * 1000,
+		"price_per_unit": orchJob.JobPrice.PricePerUnit,
+		"pixels_per_unit": orchJob.JobPrice.PixelsPerUnit,
+		"has_payment":    r.Header.Get(jobPaymentHeaderHdr) != "",
+	})
 	taskId := core.RandomManifestID()
 	ctx = clog.AddVal(ctx, "job_id", orchJob.Req.ID)
 	ctx = clog.AddVal(ctx, "worker_task_id", string(taskId))
@@ -333,6 +384,30 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 	}
 
 	start := time.Now()
+
+	// chargeAndRecord calls chargeForCompute and appends a payment_compute_charged
+	// event to the per-request accumulator.
+	chargeAndRecord := func(onError bool) {
+		bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.Capability)
+		elapsed := int64(math.Ceil(time.Since(start).Seconds()))
+		var balAfterInt int64
+		if balRat := bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability); balRat != nil {
+			if fixed, ferr := common.PriceToFixed(balRat); ferr == nil {
+				balAfterInt = fixed / 1000
+			}
+		}
+		acc.Add("payment_compute_charged", map[string]interface{}{
+			"request_id":      orchJob.Req.ID,
+			"sender_address":  orchJob.Req.Sender,
+			"capability":      orchJob.Req.Capability,
+			"elapsed_seconds": elapsed,
+			"price_per_unit":  orchJob.JobPrice.PricePerUnit,
+			"total_charged":   orchJob.JobPrice.PricePerUnit * elapsed,
+			"balance_after":   balAfterInt,
+			"on_error":        onError,
+		})
+	}
+
 	resp, err := sendReqWithTimeout(req, time.Duration(orchJob.Req.Timeout)*time.Second)
 	if err != nil {
 		clog.Errorf(ctx, "job not able to be processed err=%v ", err.Error())
@@ -343,8 +418,20 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 			bso.orch.RemoveExternalCapability(orchJob.Req.Capability)
 		}
 
-		bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.Capability)
+		acc.Add("job_orchestrator_worker_result", map[string]interface{}{
+			"request_id":      orchJob.Req.ID,
+			"capability":      orchJob.Req.Capability,
+			"worker_url":      orchJob.Req.CapabilityUrl,
+			"http_status":     0,
+			"success":         false,
+			"duration_ms":     time.Since(start).Milliseconds(),
+			"charged_compute": true,
+			"retryable":       true,
+			"error":           err.Error(),
+		})
+		chargeAndRecord(true)
 		w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability).FloatString(0))
+		flushEventsHeader()
 		http.Error(w, fmt.Sprintf("job not able to be processed, removing capability err=%v", err.Error()), http.StatusInternalServerError)
 		return
 	}
@@ -374,8 +461,20 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 		if err != nil {
 			clog.Errorf(ctx, "Unable to read response err=%v", err)
 
-			bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.Capability)
+			acc.Add("job_orchestrator_worker_result", map[string]interface{}{
+				"request_id":      orchJob.Req.ID,
+				"capability":      orchJob.Req.Capability,
+				"worker_url":      orchJob.Req.CapabilityUrl,
+				"http_status":     resp.StatusCode,
+				"success":         false,
+				"duration_ms":     time.Since(start).Milliseconds(),
+				"charged_compute": true,
+				"retryable":       true,
+				"error":           err.Error(),
+			})
+			chargeAndRecord(true)
 			w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability).FloatString(0))
+			flushEventsHeader()
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -384,15 +483,39 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 		if resp.StatusCode > 399 {
 			clog.Errorf(ctx, "error processing request err=%v ", string(data))
 
-			bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.Capability)
+			acc.Add("job_orchestrator_worker_result", map[string]interface{}{
+				"request_id":      orchJob.Req.ID,
+				"capability":      orchJob.Req.Capability,
+				"worker_url":      orchJob.Req.CapabilityUrl,
+				"http_status":     resp.StatusCode,
+				"success":         false,
+				"duration_ms":     time.Since(start).Milliseconds(),
+				"charged_compute": true,
+				"retryable":       resp.StatusCode >= 500,
+				"error":           string(data),
+			})
+			chargeAndRecord(true)
 			w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability).FloatString(0))
+			flushEventsHeader()
 			//return error response from the worker
 			http.Error(w, string(data), resp.StatusCode)
 			return
 		}
 
-		bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.Capability)
+		acc.Add("job_orchestrator_worker_result", map[string]interface{}{
+			"request_id":      orchJob.Req.ID,
+			"capability":      orchJob.Req.Capability,
+			"worker_url":      orchJob.Req.CapabilityUrl,
+			"http_status":     resp.StatusCode,
+			"success":         true,
+			"duration_ms":     time.Since(start).Milliseconds(),
+			"charged_compute": true,
+			"retryable":       false,
+			"error":           nil,
+		})
+		chargeAndRecord(false)
 		w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability).FloatString(0))
+		flushEventsHeader()
 		clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v", time.Since(start), bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability).FloatString(0))
 		w.Write(data)
 		//request completed and returned a response
@@ -413,8 +536,20 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 		if !ok {
 			clog.Errorf(ctx, "streaming not supported")
 
-			bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.Capability)
+			acc.Add("job_orchestrator_worker_result", map[string]interface{}{
+				"request_id":      orchJob.Req.ID,
+				"capability":      orchJob.Req.Capability,
+				"worker_url":      orchJob.Req.CapabilityUrl,
+				"http_status":     resp.StatusCode,
+				"success":         false,
+				"duration_ms":     time.Since(start).Milliseconds(),
+				"charged_compute": true,
+				"retryable":       false,
+				"error":           "streaming not supported",
+			})
+			chargeAndRecord(true)
 			w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability).FloatString(0))
+			flushEventsHeader()
 			http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 			return
 		}
@@ -547,6 +682,18 @@ func (bso *BYOCOrchestratorServer) confirmPayment(ctx context.Context, sender et
 		}
 
 		if orchBal.Cmp(minBal) < 0 {
+			if acc := orchEventAccumulatorFromCtx(ctx); acc != nil {
+				var balInt int64
+				if fixed, ferr := common.PriceToFixed(orchBal); ferr == nil {
+					balInt = fixed / 1000
+				}
+				acc.Add("payment_insufficient_balance", map[string]interface{}{
+					"sender":      sender.Hex(),
+					"capability":  capability,
+					"balance":     balInt,
+					"min_balance": minBal.FloatString(3),
+				})
+			}
 			return errInsufficientBalance
 		}
 	}
@@ -620,6 +767,13 @@ func (bso *BYOCOrchestratorServer) verifyJobCreds(ctx context.Context, jobCreds 
 
 	if !bso.orch.VerifySig(ethcommon.HexToAddress(jobData.Sender), jobData.Request+jobData.Parameters, sigByte) {
 		clog.Errorf(ctx, "Sig check failed sender=%v", jobData.Sender)
+		if acc := orchEventAccumulatorFromCtx(ctx); acc != nil {
+			acc.Add("job_credential_verify_result", map[string]interface{}{
+				"sender":  jobData.Sender,
+				"success": false,
+				"error":   "signature verification failed",
+			})
+		}
 		return nil, errSegSig
 	}
 
@@ -642,6 +796,19 @@ func (bso *BYOCOrchestratorServer) verifyJobCreds(ctx context.Context, jobCreds 
 		if reserveCapacity {
 			runner, err := bso.node.ExternalCapabilities.SelectAndReserveRunner(jobData.Capability, filter)
 			if err != nil {
+				if bso.pendingEvents != nil {
+					bso.pendingEvents.Enqueue("worker_capacity_exhausted", map[string]interface{}{
+						"capability":     jobData.Capability,
+						"options_filter": filter,
+					})
+				}
+				if acc := orchEventAccumulatorFromCtx(ctx); acc != nil {
+					acc.Add("job_orchestrator_capacity_rejected", map[string]interface{}{
+						"capability":     jobData.Capability,
+						"options_filter": filter,
+						"reason":         "no_capacity",
+					})
+				}
 				return nil, errZeroCapacity
 			}
 			jobData.CapabilityUrl = runner.Url
@@ -671,6 +838,15 @@ func (bso *BYOCOrchestratorServer) verifyJobCreds(ctx context.Context, jobCreds 
 		jobData.CapabilityUrl = bso.orch.GetUrlForCapability(jobData.Capability)
 	}
 
+	if acc := orchEventAccumulatorFromCtx(ctx); acc != nil {
+		acc.Add("job_credential_verify_result", map[string]interface{}{
+			"sender":     jobData.Sender,
+			"capability": jobData.Capability,
+			"worker_url": jobData.CapabilityUrl,
+			"success":    true,
+			"error":      nil,
+		})
+	}
 	return jobData, nil
 }
 

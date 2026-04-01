@@ -131,6 +131,21 @@ var schema = `
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_blockheaders_number ON blockheaders(number);
+
+	CREATE TABLE IF NOT EXISTS orch_pending_events (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		event_uuid TEXT    NOT NULL,
+		type       TEXT    NOT NULL,
+		data       TEXT    NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_orch_pending_events_created_at ON orch_pending_events(created_at);
+
+	CREATE TABLE IF NOT EXISTS gateway_event_cursors (
+		orch_url   TEXT    PRIMARY KEY,
+		cursor_ms  INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL
+	);
 `
 
 func NewDBOrch(ethereumAddr string, serviceURI string, pricePerPixel int64, activationRound int64, deactivationRound int64, stake int64) *DBOrch {
@@ -362,6 +377,12 @@ func InitDB(dbPath string) (*DB, error) {
 
 	glog.V(DEBUG).Info("Initialized DB node")
 	return &d, nil
+}
+
+// DBHandle returns the underlying *sql.DB for use by packages that need direct
+// SQL access (e.g. byoc pending-event store, discovery cursor store).
+func (db *DB) DBHandle() *sql.DB {
+	return db.dbh
 }
 
 func (db *DB) Close() {

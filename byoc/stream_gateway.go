@@ -158,7 +158,19 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 	}
 	// Ensure cleanup happens on ALL exit paths
 	var exitErr error
+	var swapCnt int
 	defer func() {
+		errStr := ""
+		if exitErr != nil {
+			errStr = exitErr.Error()
+		}
+		monitor.SendQueueEventAsync("stream_trace", map[string]interface{}{
+			"type":        "stream_stopped",
+			"stream_id":   streamID,
+			"duration_ms": time.Since(stream.StartTime).Milliseconds(),
+			"swap_count":  swapCnt,
+			"error":       errStr,
+		})
 		// Best-effort cleanup
 		bsg.stopStreamPipeline(streamID, exitErr)
 	}()
@@ -175,7 +187,6 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 
 	firstProcessed := false
 	lastSwap := time.Now()
-	swapCnt := 0
 	for _, orch := range gatewayJob.Orchs {
 		clog.Infof(ctx, "Starting stream processing")
 		//refresh the token if not first Orch to confirm capacity and new ticket params
@@ -298,9 +309,29 @@ func (bsg *BYOCGatewayServer) refreshToken(ctx context.Context, streamID string,
 	newToken, err := getToken(ctx, getNewTokenTimeout, orch.ServiceAddr, gatewayJob.Job.Req.Capability, gatewayJob.Job.Req.Sender, gatewayJob.Job.Req.Sig)
 	if err != nil {
 		clog.Errorf(ctx, "Error getting token for orch=%v err=%v", orch.ServiceAddr, err)
+		monitor.SendQueueEventAsync("stream_trace", map[string]interface{}{
+			"type":      "stream_orchestrator_token_refresh",
+			"stream_id": streamID,
+			"success":   false,
+			"error":     err.Error(),
+			"orchestrator_info": map[string]interface{}{
+				"address": orch.Address(),
+				"url":     orch.ServiceAddr,
+			},
+		})
 		return orch
 	}
 
+	monitor.SendQueueEventAsync("stream_trace", map[string]interface{}{
+		"type":      "stream_orchestrator_token_refresh",
+		"stream_id": streamID,
+		"success":   true,
+		"error":     nil,
+		"orchestrator_info": map[string]interface{}{
+			"address": newToken.Address(),
+			"url":     newToken.ServiceAddr,
+		},
+	})
 	return *newToken
 }
 
@@ -346,10 +377,28 @@ func (bsg *BYOCGatewayServer) monitorStream(streamId string) {
 				return
 			}
 
-			err := bsg.sendPaymentForStream(ctx, streamId, jobSender)
-			if err != nil {
-				clog.Errorf(ctx, "Error sending payment for stream %s: %v", streamId, err)
+			pmtErr := bsg.sendPaymentForStream(ctx, streamId, jobSender)
+			if pmtErr != nil {
+				clog.Errorf(ctx, "Error sending payment for stream %s: %v", streamId, pmtErr)
 			}
+			pmtErrStr := ""
+			if pmtErr != nil {
+				pmtErrStr = pmtErr.Error()
+			}
+			stream.streamParams.liveParams.mu.Lock()
+			orchToken := stream.streamParams.liveParams.orchToken
+			stream.streamParams.liveParams.mu.Unlock()
+			monitor.SendQueueEventAsync("job_payment", map[string]interface{}{
+				"type":       "payment_stream_cycle",
+				"stream_id":  streamId,
+				"request_id": stream.streamParams.liveParams.requestID,
+				"success":    pmtErr == nil,
+				"error":      pmtErrStr,
+				"orchestrator_info": map[string]interface{}{
+					"address": orchToken.Address(),
+					"url":     orchToken.ServiceAddr,
+				},
+			})
 		}
 	}
 }
@@ -536,6 +585,15 @@ func (bsg *BYOCGatewayServer) setupStream(ctx context.Context, r *http.Request, 
 			StatusURL:   statusURL,
 		})
 		if err != nil {
+			monitor.SendQueueEventAsync("job_auth", map[string]interface{}{
+				"type":         "job_auth_webhook_result",
+				"stream_name":  streamName,
+				"stream_id":    streamID,
+				"pipeline":     pipeline,
+				"success":      false,
+				"error":        err.Error(),
+				"gateway_host": bsg.node.GatewayHost,
+			})
 			return nil, http.StatusForbidden, fmt.Errorf("live ai auth failed: %w", err)
 		}
 
@@ -562,6 +620,17 @@ func (bsg *BYOCGatewayServer) setupStream(ctx context.Context, r *http.Request, 
 		if authResp.PipelineID != "" {
 			pipelineID = authResp.PipelineID
 		}
+
+		monitor.SendQueueEventAsync("job_auth", map[string]interface{}{
+			"type":         "job_auth_webhook_result",
+			"stream_name":  streamName,
+			"stream_id":    streamID,
+			"pipeline":     pipeline,
+			"pipeline_id":  pipelineID,
+			"success":      true,
+			"error":        nil,
+			"gateway_host": bsg.node.GatewayHost,
+		})
 	}
 
 	ctx = clog.AddVal(ctx, "stream_id", streamID)

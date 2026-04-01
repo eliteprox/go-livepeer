@@ -2,9 +2,12 @@ package byoc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/livepeer/go-livepeer/core"
@@ -70,6 +73,7 @@ func (bsg *BYOCGatewayServer) newStreamPipeline(requestID, streamID, pipeline st
 		streamCancel:  streamCancel,
 		streamRequest: streamRequest,
 		OutCond:       sync.NewCond(bsg.mu),
+		StartTime:     time.Now(),
 	}
 	return bsg.StreamPipelines[streamID]
 }
@@ -201,7 +205,8 @@ type BYOCOrchestratorServer struct {
 
 	httpMux *http.ServeMux
 
-	sharedBalMtx *sync.Mutex
+	sharedBalMtx  *sync.Mutex
+	pendingEvents *PendingEventStore
 }
 
 func NewBYOCOrchestratorServer(node *core.LivepeerNode, orch Orchestrator, trickleSrv *trickle.Server, trickleBasePath string, mux *http.ServeMux) *BYOCOrchestratorServer {
@@ -212,6 +217,11 @@ func NewBYOCOrchestratorServer(node *core.LivepeerNode, orch Orchestrator, trick
 		trickleBasePath: trickleBasePath,
 		httpMux:         mux,
 		sharedBalMtx:    &sync.Mutex{},
+	}
+
+	if node.Database != nil {
+		bso.pendingEvents = NewPendingEventStore(node.Database.DBHandle())
+		bso.pendingEvents.StartDailyPurge(24 * time.Hour)
 	}
 
 	bso.registerRoutes()
@@ -237,4 +247,32 @@ func (bso *BYOCOrchestratorServer) registerRoutes() {
 	bso.httpMux.Handle("/ai/stream/stop", bso.StopStream())
 	bso.httpMux.Handle("/ai/stream/update", bso.UpdateStream())
 	bso.httpMux.Handle("/ai/stream/payment", bso.ProcessStreamPayment())
+	// Lifecycle event drain — polled by gateways during discovery cycle
+	bso.httpMux.Handle("GET /events/drain", bso.DrainEvents())
+}
+
+// DrainEvents returns all lifecycle events created after the cursor provided
+// in the since_ms query parameter. Events are never deleted on read; the
+// caller advances its own cursor. Used by gateways to relay worker_registered,
+// worker_unregistered, and worker_capacity_exhausted events to Kafka.
+func (bso *BYOCOrchestratorServer) DrainEvents() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bso.pendingEvents == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte("[]"))
+			return
+		}
+		sinceMs, _ := strconv.ParseInt(r.URL.Query().Get("since_ms"), 10, 64)
+		events, err := bso.pendingEvents.Since(sinceMs)
+		if err != nil {
+			glog.Errorf("byoc: DrainEvents since_ms=%d err=%v", sinceMs, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if events == nil {
+			events = []PendingEvent{}
+		}
+		json.NewEncoder(w).Encode(events)
+	})
 }
