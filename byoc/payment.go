@@ -100,6 +100,7 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 
 	monitor.SendQueueEventAsync("job_payment", map[string]interface{}{
 		"type":              "payment_balance_sync",
+		"request_id":        jobReq.ID,
 		"capability":        jobReq.Capability,
 		"sender":            sender.Hex(),
 		"orchestrator_addr": orchAddr.Hex(),
@@ -132,6 +133,7 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 		clog.V(common.DEBUG).Infof(ctx, "No payment required, using balance=%v", balance.FloatString(3))
 		monitor.SendQueueEventAsync("job_payment", map[string]interface{}{
 			"type":         "payment_created",
+			"request_id":   jobReq.ID,
 			"capability":   jobReq.Capability,
 			"sender":       sender.Hex(),
 			"balance":      balance.FloatString(3),
@@ -208,6 +210,7 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 
 	monitor.SendQueueEventAsync("job_payment", map[string]interface{}{
 		"type":         "payment_created",
+		"request_id":   jobReq.ID,
 		"capability":   jobReq.Capability,
 		"sender":       sender.Hex(),
 		"balance":      balance.FloatString(3),

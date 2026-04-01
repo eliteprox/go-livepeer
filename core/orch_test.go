@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+	"github.com/livepeer/go-livepeer/ai/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -1951,6 +1952,78 @@ type stubRoundsManager struct {
 }
 
 func (s *stubRoundsManager) LastInitializedRound() *big.Int { return s.round }
+
+func TestWorkerHardware_NilExternalCapabilities(t *testing.T) {
+	n, _ := NewLivepeerNode(nil, "", nil)
+	n.AIWorkerManager = NewRemoteAIWorkerManager()
+	n.ExternalCapabilities = nil
+	orch := NewOrchestrator(n, nil)
+
+	// Should not panic; managed workers slot is empty too
+	hw := orch.WorkerHardware()
+	assert.Empty(t, hw)
+}
+
+func TestWorkerHardware_IncludesBYOCHardware(t *testing.T) {
+	n, _ := NewLivepeerNode(nil, "", nil)
+
+	byocHW := worker.HardwareInformation{
+		Pipeline: "text-to-image",
+		ModelId:  "stable-diffusion-v1",
+		GpuInfo:  map[string]worker.GPUComputeInfo{"0": {Id: "GPU-byoc-1", Name: "A100"}},
+	}
+	n.ExternalCapabilities.Capabilities["text-to-image"] = map[string]*ExternalCapability{
+		"http://byoc-runner:8000": {
+			Name:     "text-to-image",
+			Hardware: []worker.HardwareInformation{byocHW},
+		},
+	}
+
+	orch := NewOrchestrator(n, nil)
+	hw := orch.WorkerHardware()
+
+	require.Len(t, hw, 1)
+	assert.Equal(t, "text-to-image", hw[0].Pipeline)
+	assert.Equal(t, "stable-diffusion-v1", hw[0].ModelId)
+	assert.Equal(t, "GPU-byoc-1", hw[0].GpuInfo["0"].Id)
+}
+
+func TestWorkerHardware_ManagedAndBYOCCombined(t *testing.T) {
+	n, _ := NewLivepeerNode(nil, "", nil)
+	n.AIWorkerManager = NewRemoteAIWorkerManager()
+
+	// Inject a managed (gRPC) worker directly into liveAIWorkers
+	managedHW := worker.HardwareInformation{
+		Pipeline: "upscale",
+		ModelId:  "real-esrgan",
+		GpuInfo:  map[string]worker.GPUComputeInfo{"0": {Id: "GPU-managed-1", Name: "H100"}},
+	}
+	fakeStream := &StubAIWorkerServer{}
+	n.AIWorkerManager.liveAIWorkers[fakeStream] = &RemoteAIWorker{
+		hardware: []worker.HardwareInformation{managedHW},
+	}
+
+	// BYOC runner hardware
+	byocHW := worker.HardwareInformation{
+		Pipeline: "text-to-image",
+		ModelId:  "sdxl",
+		GpuInfo:  map[string]worker.GPUComputeInfo{"0": {Id: "GPU-byoc-1", Name: "A100"}},
+	}
+	n.ExternalCapabilities.Capabilities["text-to-image"] = map[string]*ExternalCapability{
+		"http://byoc-runner:8000": {
+			Name:     "text-to-image",
+			Hardware: []worker.HardwareInformation{byocHW},
+		},
+	}
+
+	orch := NewOrchestrator(n, nil)
+	hw := orch.WorkerHardware()
+
+	require.Len(t, hw, 2)
+	gpuIDs := []string{hw[0].GpuInfo["0"].Id, hw[1].GpuInfo["0"].Id}
+	assert.Contains(t, gpuIDs, "GPU-managed-1")
+	assert.Contains(t, gpuIDs, "GPU-byoc-1")
+}
 
 func tempDBWithOrch(t *testing.T, orch *common.DBOrch) (*common.DB, *sql.DB) {
 	return tempDBWithOrchs(t, []*common.DBOrch{orch})

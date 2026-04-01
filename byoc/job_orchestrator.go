@@ -67,7 +67,8 @@ func (bs *BYOCOrchestratorServer) RegisterCapability() http.Handler {
 		w.Write([]byte("ok"))
 		cap.SetWorkerOptions(cap.WorkerOptions)
 		optsJSON, _ := json.Marshal(cap.WorkerOptions)
-		clog.Infof(context.TODO(), "registered capability remoteAddr=%v capability=%v url=%v price=%v auth_token=%v worker_options=%v", remoteAddr, cap.Name, cap.Url, big.NewRat(cap.PricePerUnit, cap.PriceScaling), cap.AuthToken != "", string(optsJSON))
+		hwJSON, _ := json.Marshal(cap.Hardware)
+		clog.Infof(context.TODO(), "registered capability remoteAddr=%v capability=%v url=%v price=%v auth_token=%v worker_options=%v hardware=%v", remoteAddr, cap.Name, cap.Url, big.NewRat(cap.PricePerUnit, cap.PriceScaling), cap.AuthToken != "", string(optsJSON), string(hwJSON))
 		if bs.pendingEvents != nil {
 			bs.pendingEvents.Enqueue("worker_registered", map[string]interface{}{
 				"capability":            cap.Name,
@@ -425,6 +426,7 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 			"http_status":     0,
 			"success":         false,
 			"duration_ms":     time.Since(start).Milliseconds(),
+			"completed_at":    time.Now().UnixMilli(),
 			"charged_compute": true,
 			"retryable":       true,
 			"error":           err.Error(),
@@ -468,6 +470,7 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 				"http_status":     resp.StatusCode,
 				"success":         false,
 				"duration_ms":     time.Since(start).Milliseconds(),
+				"completed_at":    time.Now().UnixMilli(),
 				"charged_compute": true,
 				"retryable":       true,
 				"error":           err.Error(),
@@ -490,6 +493,7 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 				"http_status":     resp.StatusCode,
 				"success":         false,
 				"duration_ms":     time.Since(start).Milliseconds(),
+				"completed_at":    time.Now().UnixMilli(),
 				"charged_compute": true,
 				"retryable":       resp.StatusCode >= 500,
 				"error":           string(data),
@@ -509,6 +513,7 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 			"http_status":     resp.StatusCode,
 			"success":         true,
 			"duration_ms":     time.Since(start).Milliseconds(),
+			"completed_at":    time.Now().UnixMilli(),
 			"charged_compute": true,
 			"retryable":       false,
 			"error":           nil,
@@ -543,6 +548,7 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 				"http_status":     resp.StatusCode,
 				"success":         false,
 				"duration_ms":     time.Since(start).Milliseconds(),
+				"completed_at":    time.Now().UnixMilli(),
 				"charged_compute": true,
 				"retryable":       false,
 				"error":           "streaming not supported",
@@ -621,6 +627,19 @@ func (bso *BYOCOrchestratorServer) processJob(ctx context.Context, w http.Respon
 
 		//capacity released with defer stmt above
 		clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v", time.Since(start), bso.getPaymentBalance(orchJob.Sender, orchJob.Req.Capability).FloatString(0))
+		acc.Add("job_orchestrator_worker_result", map[string]interface{}{
+			"request_id":      orchJob.Req.ID,
+			"capability":      orchJob.Req.Capability,
+			"worker_url":      orchJob.Req.CapabilityUrl,
+			"http_status":     resp.StatusCode,
+			"success":         true,
+			"duration_ms":     time.Since(start).Milliseconds(),
+			"completed_at":    time.Now().UnixMilli(),
+			"charged_compute": true,
+			"retryable":       false,
+			"error":           nil,
+		})
+		flushEventsHeader()
 	}
 }
 

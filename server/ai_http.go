@@ -316,6 +316,7 @@ func handleAIRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 	}
 
 	requestID := string(core.RandomManifestID())
+	ctx = clog.AddVal(ctx, "request_id", requestID)
 
 	var cap core.Capability
 	var pipeline string

@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/livepeer/go-livepeer/ai/worker"
 	"github.com/livepeer/go-livepeer/eth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -300,4 +301,132 @@ func TestExternalCapabilities_Concurrency(t *testing.T) {
 		// No assertions needed - if there are no race conditions during build with -race flag,
 		// then the test passes
 	})
+}
+
+// helpers for hardware tests
+func makeHardwareInfo(pipeline, modelID, gpuID, gpuName string) worker.HardwareInformation {
+	return worker.HardwareInformation{
+		Pipeline: pipeline,
+		ModelId:  modelID,
+		GpuInfo: map[string]worker.GPUComputeInfo{
+			"0": {Id: gpuID, Name: gpuName},
+		},
+	}
+}
+
+func TestExternalCapability_HardwareUnmarshaledFromRegistration(t *testing.T) {
+	extCaps := NewExternalCapabilities()
+
+	capJSON := `{
+		"name": "text-to-image",
+		"url": "http://worker1:8000",
+		"capacity": 1,
+		"price_per_unit": 0,
+		"price_scaling": 1,
+		"hardware": [
+			{
+				"pipeline": "text-to-image",
+				"model_id": "stable-diffusion-v1",
+				"gpu_info": {
+					"0": {"id": "GPU-abc123", "name": "NVIDIA A100", "major": 8, "minor": 0, "memory_free": 40000, "memory_total": 80000}
+				}
+			}
+		]
+	}`
+
+	cap, err := extCaps.RegisterCapability(capJSON)
+	require.NoError(t, err)
+	require.Len(t, cap.Hardware, 1)
+	assert.Equal(t, "text-to-image", cap.Hardware[0].Pipeline)
+	assert.Equal(t, "stable-diffusion-v1", cap.Hardware[0].ModelId)
+	require.Contains(t, cap.Hardware[0].GpuInfo, "0")
+	assert.Equal(t, "GPU-abc123", cap.Hardware[0].GpuInfo["0"].Id)
+	assert.Equal(t, "NVIDIA A100", cap.Hardware[0].GpuInfo["0"].Name)
+}
+
+func TestExternalCapabilities_GetAllHardware_Empty(t *testing.T) {
+	extCaps := NewExternalCapabilities()
+	hw := extCaps.GetAllHardware()
+	assert.Nil(t, hw)
+}
+
+func TestExternalCapabilities_GetAllHardware_NilCapabilitiesMap(t *testing.T) {
+	// Capabilities map is nil (not just empty)
+	extCaps := &ExternalCapabilities{}
+	hw := extCaps.GetAllHardware()
+	assert.Nil(t, hw)
+}
+
+func TestExternalCapabilities_GetAllHardware_SingleRunner(t *testing.T) {
+	extCaps := NewExternalCapabilities()
+	hw1 := makeHardwareInfo("text-to-image", "model-a", "GPU-001", "A100")
+	hw2 := makeHardwareInfo("text-to-image", "model-b", "GPU-001", "A100")
+
+	extCaps.Capabilities["text-to-image"] = map[string]*ExternalCapability{
+		"http://worker1:8000": {
+			Name:     "text-to-image",
+			Hardware: []worker.HardwareInformation{hw1, hw2},
+		},
+	}
+
+	result := extCaps.GetAllHardware()
+	require.Len(t, result, 2)
+	assert.Equal(t, "model-a", result[0].ModelId)
+	assert.Equal(t, "model-b", result[1].ModelId)
+}
+
+func TestExternalCapabilities_GetAllHardware_MultipleRunners(t *testing.T) {
+	extCaps := NewExternalCapabilities()
+
+	hwA := makeHardwareInfo("text-to-image", "model-a", "GPU-001", "A100")
+	hwB := makeHardwareInfo("image-to-image", "model-b", "GPU-002", "H100")
+
+	extCaps.Capabilities["text-to-image"] = map[string]*ExternalCapability{
+		"http://worker1:8000": {Name: "text-to-image", Hardware: []worker.HardwareInformation{hwA}},
+	}
+	extCaps.Capabilities["image-to-image"] = map[string]*ExternalCapability{
+		"http://worker2:8000": {Name: "image-to-image", Hardware: []worker.HardwareInformation{hwB}},
+	}
+
+	result := extCaps.GetAllHardware()
+	require.Len(t, result, 2)
+
+	// order is non-deterministic (map iteration), so check both are present
+	modelIDs := []string{result[0].ModelId, result[1].ModelId}
+	assert.Contains(t, modelIDs, "model-a")
+	assert.Contains(t, modelIDs, "model-b")
+}
+
+func TestExternalCapabilities_GetAllHardware_RunnerWithNoHardware(t *testing.T) {
+	extCaps := NewExternalCapabilities()
+	extCaps.Capabilities["text-to-image"] = map[string]*ExternalCapability{
+		"http://worker1:8000": {Name: "text-to-image"}, // no Hardware field
+	}
+
+	result := extCaps.GetAllHardware()
+	assert.Nil(t, result)
+}
+
+func TestExternalCapability_HardwareRoundTripJSON(t *testing.T) {
+	// Verify hardware survives a JSON marshal/unmarshal cycle (used in registration)
+	original := worker.HardwareInformation{
+		Pipeline: "pipeline-x",
+		ModelId:  "model-x",
+		GpuInfo:  map[string]worker.GPUComputeInfo{"0": {Id: "GPU-xyz", Name: "RTX 4090", Major: 8, Minor: 9, MemoryFree: 10000, MemoryTotal: 24000}},
+	}
+	cap := ExternalCapability{
+		Name:     "pipeline-x",
+		Hardware: []worker.HardwareInformation{original},
+	}
+
+	data, err := json.Marshal(cap)
+	require.NoError(t, err)
+
+	var restored ExternalCapability
+	require.NoError(t, json.Unmarshal(data, &restored))
+	require.Len(t, restored.Hardware, 1)
+	assert.Equal(t, original.Pipeline, restored.Hardware[0].Pipeline)
+	assert.Equal(t, original.ModelId, restored.Hardware[0].ModelId)
+	assert.Equal(t, "GPU-xyz", restored.Hardware[0].GpuInfo["0"].Id)
+	assert.Equal(t, 8, restored.Hardware[0].GpuInfo["0"].Major)
 }

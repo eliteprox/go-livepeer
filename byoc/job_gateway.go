@@ -65,7 +65,7 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 
 	//send the request to the Orchestrator(s)
 	//the loop ends on Gateway error and bad request errors
-	for _, orchToken := range gatewayJob.Orchs {
+	for attemptIdx, orchToken := range gatewayJob.Orchs {
 		workerResourceRoute := r.URL.Path
 
 		err := gatewayJob.sign()
@@ -76,9 +76,10 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 
 		start := time.Now()
 		monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
-			"type":       "job_gateway_submitted",
-			"request_id": gatewayJob.Job.Req.ID,
-			"capability": gatewayJob.Job.Req.Capability,
+			"type":          "job_gateway_submitted",
+			"request_id":    gatewayJob.Job.Req.ID,
+			"attempt_index": attemptIdx,
+			"capability":    gatewayJob.Job.Req.Capability,
 			"orchestrator_info": map[string]interface{}{
 				"address": orchToken.Address(),
 				"url":     orchToken.ServiceAddr,
@@ -88,12 +89,14 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 		if err != nil {
 			clog.Errorf(ctx, "job not able to be processed by Orchestrator %v err=%v ", orchToken.ServiceAddr, err.Error())
 			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
-				"type":        "job_gateway_completed",
-				"request_id":  gatewayJob.Job.Req.ID,
-				"capability":  gatewayJob.Job.Req.Capability,
-				"success":     false,
-				"error":       err.Error(),
-				"duration_ms": time.Since(start).Milliseconds(),
+				"type":          "job_gateway_completed",
+				"request_id":    gatewayJob.Job.Req.ID,
+				"attempt_index": attemptIdx,
+				"capability":    gatewayJob.Job.Req.Capability,
+				"success":       false,
+				"error":         err.Error(),
+				"duration_ms":   time.Since(start).Milliseconds(),
+				"completed_at":  time.Now().UnixMilli(),
 				"orchestrator_info": map[string]interface{}{
 					"address": orchToken.Address(),
 					"url":     orchToken.ServiceAddr,
@@ -146,13 +149,15 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 			gatewayBalance := updateGatewayBalance(bsg.node, orchToken, gatewayJob.Job.Req.Capability, time.Since(start))
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance)
 			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
-				"type":        "job_gateway_completed",
-				"request_id":  gatewayJob.Job.Req.ID,
-				"capability":  gatewayJob.Job.Req.Capability,
-				"success":     true,
-				"error":       nil,
-				"duration_ms": time.Since(start).Milliseconds(),
-				"http_status": code,
+				"type":          "job_gateway_completed",
+				"request_id":    gatewayJob.Job.Req.ID,
+				"attempt_index": attemptIdx,
+				"capability":    gatewayJob.Job.Req.Capability,
+				"success":       true,
+				"error":         nil,
+				"duration_ms":   time.Since(start).Milliseconds(),
+				"completed_at":  time.Now().UnixMilli(),
+				"http_status":   code,
 				"orchestrator_info": map[string]interface{}{
 					"address": orchToken.Address(),
 					"url":     orchToken.ServiceAddr,
@@ -225,14 +230,16 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance.FloatString(0))
 			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
-				"type":        "job_gateway_completed",
-				"request_id":  gatewayJob.Job.Req.ID,
-				"capability":  gatewayJob.Job.Req.Capability,
-				"success":     true,
-				"error":       nil,
-				"duration_ms": time.Since(start).Milliseconds(),
-				"http_status": code,
-				"streaming":   true,
+				"type":          "job_gateway_completed",
+				"request_id":    gatewayJob.Job.Req.ID,
+				"attempt_index": attemptIdx,
+				"capability":    gatewayJob.Job.Req.Capability,
+				"success":       true,
+				"error":         nil,
+				"duration_ms":   time.Since(start).Milliseconds(),
+				"completed_at":  time.Now().UnixMilli(),
+				"http_status":   code,
+				"streaming":     true,
 				"orchestrator_info": map[string]interface{}{
 					"address": orchToken.Address(),
 					"url":     orchToken.ServiceAddr,

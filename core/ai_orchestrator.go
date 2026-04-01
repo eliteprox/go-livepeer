@@ -451,8 +451,14 @@ func (orch *orchestrator) WorkerHardware() []worker.HardwareInformation {
 		// return combined hardware information from all live remote workers from information provided by workers
 		// when connecting to orchestrator. Does not reach out for real-time information.
 		var wkrHdw []worker.HardwareInformation
-		for _, worker := range orch.node.AIWorkerManager.liveAIWorkers {
-			wkrHdw = append(wkrHdw, worker.hardware...)
+		if orch.node.AIWorkerManager != nil {
+			for _, worker := range orch.node.AIWorkerManager.liveAIWorkers {
+				wkrHdw = append(wkrHdw, worker.hardware...)
+			}
+		}
+		// Include hardware from BYOC runners registered via ExternalCapabilities.
+		if orch.node.ExternalCapabilities != nil {
+			wkrHdw = append(wkrHdw, orch.node.ExternalCapabilities.GetAllHardware()...)
 		}
 		return wkrHdw
 	}
