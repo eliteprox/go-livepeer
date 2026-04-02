@@ -1175,6 +1175,41 @@ func submitLLM(ctx context.Context, params aiRequestParams, sess *AISession, req
 	defer completeBalanceUpdate(sess.BroadcastSession, balUpdate)
 
 	start := time.Now()
+
+	// llm_request_started: fired before the HTTP call to the worker
+	{
+		var pricePerUnit float64
+		if pi := sess.OrchestratorInfo.GetPriceInfo(); pi != nil && pi.PixelsPerUnit != 0 {
+			pricePerUnit = float64(pi.PricePerUnit) / float64(pi.PixelsPerUnit)
+		}
+		streaming := req.Stream != nil && *req.Stream
+		systemPrompt := false
+		for _, msg := range req.Messages {
+			if msg.Role == "system" {
+				systemPrompt = true
+				break
+			}
+		}
+		var temperature interface{}
+		if req.Temperature != nil {
+			temperature = *req.Temperature
+		}
+		monitor.SendQueueEventAsync("ai_llm_request", map[string]interface{}{
+			"type":           "llm_request_started",
+			"timestamp":      time.Now().UnixMilli(),
+			"request_id":     clog.GetVal(ctx, "request_id"),
+			"model":          *req.Model,
+			"streaming":      streaming,
+			"max_tokens":     *req.MaxTokens,
+			"message_count":  len(req.Messages),
+			"system_prompt":  systemPrompt,
+			"temperature":    temperature,
+			"orch_url":       sess.Transcoder(),
+			"price_per_unit": pricePerUnit,
+			"client_ip":      clog.GetVal(ctx, clog.ClientIP),
+		})
+	}
+
 	resp, err := client.GenLLM(ctx, req, setHeaders)
 	if err != nil {
 		if monitor.Enabled {
@@ -1208,6 +1243,8 @@ func handleSSEStream(ctx context.Context, body io.ReadCloser, sess *AISession, r
 		defer body.Close()
 		scanner := bufio.NewScanner(body)
 		var totalTokens worker.LLMTokenUsage
+		var lastChunk worker.LLMResponse
+		var firstTokenTime time.Time
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.HasPrefix(line, "data: ") {
@@ -1218,10 +1255,14 @@ func handleSSEStream(ctx context.Context, body io.ReadCloser, sess *AISession, r
 					clog.Errorf(ctx, "Error unmarshaling SSE data: %v", err)
 					continue
 				}
+				if firstTokenTime.IsZero() {
+					firstTokenTime = time.Now()
+				}
 				totalTokens = chunk.Usage
+				lastChunk = chunk
 				streamChan <- &chunk
 				//check if stream is finished
-				if chunk.Choices[0].FinishReason != nil && *chunk.Choices[0].FinishReason != "" {
+				if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != nil && *chunk.Choices[0].FinishReason != "" {
 					break
 				}
 			}
@@ -1233,11 +1274,56 @@ func handleSSEStream(ctx context.Context, body io.ReadCloser, sess *AISession, r
 		took := time.Since(start)
 		sess.LatencyScore = CalculateLLMLatencyScore(took, totalTokens.TotalTokens)
 
+		var pricePerAIUnit float64
+		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
+			pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
+		}
+
+		finishReason := "unknown"
+		if len(lastChunk.Choices) > 0 && lastChunk.Choices[0].FinishReason != nil && *lastChunk.Choices[0].FinishReason != "" {
+			finishReason = *lastChunk.Choices[0].FinishReason
+		}
+		if scanner.Err() != nil {
+			finishReason = "error"
+		}
+		var ttftMs int64
+		if !firstTokenTime.IsZero() {
+			ttftMs = firstTokenTime.Sub(start).Milliseconds()
+		}
+		tokenUtil := 0.0
+		if req.MaxTokens != nil && *req.MaxTokens > 0 {
+			tokenUtil = float64(totalTokens.TotalTokens) / float64(*req.MaxTokens)
+		}
+		tps := 0.0
+		if took.Seconds() > 0 && totalTokens.CompletionTokens > 0 {
+			tps = float64(totalTokens.CompletionTokens) / took.Seconds()
+		}
+		streamErr := ""
+		if scanner.Err() != nil {
+			streamErr = scanner.Err().Error()
+		}
+		monitor.SendQueueEventAsync("ai_llm_request", map[string]interface{}{
+			"type":                 "llm_stream_completed",
+			"timestamp":            time.Now().UnixMilli(),
+			"request_id":           clog.GetVal(ctx, "request_id"),
+			"model":                lastChunk.Model,
+			"completion_id":        lastChunk.Id,
+			"orch_url":             sess.Transcoder(),
+			"prompt_tokens":        totalTokens.PromptTokens,
+			"completion_tokens":    totalTokens.CompletionTokens,
+			"total_tokens":         totalTokens.TotalTokens,
+			"max_tokens_requested": req.MaxTokens,
+			"token_utilization":    tokenUtil,
+			"finish_reason":        finishReason,
+			"total_duration_ms":    took.Milliseconds(),
+			"tokens_per_second":    tps,
+			"latency_score":        sess.LatencyScore,
+			"price_per_unit":       pricePerAIUnit,
+			"ttft_ms":              ttftMs,
+			"error":                streamErr,
+		})
+
 		if monitor.Enabled {
-			var pricePerAIUnit float64
-			if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
-				pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
-			}
 			monitor.AIRequestFinished(ctx, "llm", *req.Model, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 		}
 	}()
@@ -1267,11 +1353,43 @@ func handleNonStreamingResponse(ctx context.Context, body io.ReadCloser, sess *A
 
 	sess.LatencyScore = CalculateLLMLatencyScore(took, res.Usage.TotalTokens)
 
+	var pricePerAIUnit float64
+	if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
+		pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
+	}
+
+	finishReason := "unknown"
+	if len(res.Choices) > 0 && res.Choices[0].FinishReason != nil {
+		finishReason = *res.Choices[0].FinishReason
+	}
+	tokenUtil := 0.0
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		tokenUtil = float64(res.Usage.TotalTokens) / float64(*req.MaxTokens)
+	}
+	tps := 0.0
+	if took.Seconds() > 0 && res.Usage.CompletionTokens > 0 {
+		tps = float64(res.Usage.CompletionTokens) / took.Seconds()
+	}
+	monitor.SendQueueEventAsync("ai_llm_request", map[string]interface{}{
+		"type":                 "llm_request_completed",
+		"timestamp":            time.Now().UnixMilli(),
+		"request_id":           clog.GetVal(ctx, "request_id"),
+		"model":                res.Model,
+		"completion_id":        res.Id,
+		"orch_url":             sess.Transcoder(),
+		"prompt_tokens":        res.Usage.PromptTokens,
+		"completion_tokens":    res.Usage.CompletionTokens,
+		"total_tokens":         res.Usage.TotalTokens,
+		"max_tokens_requested": *req.MaxTokens,
+		"token_utilization":    tokenUtil,
+		"finish_reason":        finishReason,
+		"total_duration_ms":    took.Milliseconds(),
+		"tokens_per_second":    tps,
+		"latency_score":        sess.LatencyScore,
+		"price_per_unit":       pricePerAIUnit,
+	})
+
 	if monitor.Enabled {
-		var pricePerAIUnit float64
-		if priceInfo := sess.OrchestratorInfo.GetPriceInfo(); priceInfo != nil && priceInfo.PixelsPerUnit != 0 {
-			pricePerAIUnit = float64(priceInfo.PricePerUnit) / float64(priceInfo.PixelsPerUnit)
-		}
 		monitor.AIRequestFinished(ctx, "llm", *req.Model, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 	}
 
@@ -1377,7 +1495,7 @@ func processImageToText(ctx context.Context, params aiRequestParams, req worker.
 	return txtResp, nil
 }
 
-func processAIRequest(ctx context.Context, params aiRequestParams, req interface{}) (interface{}, error) {
+func processAIRequest(ctx context.Context, params aiRequestParams, req interface{}) (resp interface{}, retErr error) {
 	var cap core.Capability
 	var modelID string
 	var submitFn func(context.Context, aiRequestParams, *AISession) (interface{}, error)
@@ -1493,8 +1611,6 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 	start := time.Now()
 	defer clog.Infof(ctx, "Processed AI request model_id=%v took=%v", modelID, time.Since(start))
 
-	var resp interface{}
-
 	processingRetryTimeout := params.node.AIProcesssingRetryTimeout
 	cctx, cancel := context.WithTimeout(ctx, processingRetryTimeout)
 	defer cancel()
@@ -1502,6 +1618,51 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 	tries := 0
 	sessTries := map[string]int{}
 	var retryableSessions []*AISession
+	var lastSess *AISession
+
+	if params.liveParams == nil {
+		monitor.SendQueueEventAsync("ai_batch_request", map[string]interface{}{
+			"type":         "ai_batch_request_received",
+			"timestamp":    time.Now().UnixMilli(),
+			"request_id":   clog.GetVal(ctx, "request_id"),
+			"pipeline":     monitor.ToPipeline(capName),
+			"model_id":     modelID,
+			"client_ip":    clog.GetVal(ctx, clog.ClientIP),
+			"orchestrator": params.orchestrator,
+		})
+		defer func() {
+			var orchURL string
+			var latencyScore, pricePerUnit float64
+			if lastSess != nil {
+				orchURL = lastSess.Transcoder()
+				latencyScore = lastSess.LatencyScore
+				if pi := lastSess.OrchestratorInfo.GetPriceInfo(); pi != nil && pi.PixelsPerUnit != 0 {
+					pricePerUnit = float64(pi.PricePerUnit) / float64(pi.PixelsPerUnit)
+				}
+			}
+			errType := batchAIRequestErrorType(retErr, cctx)
+			errMsg := ""
+			if retErr != nil {
+				errMsg = retErr.Error()
+			}
+			monitor.SendQueueEventAsync("ai_batch_request", map[string]interface{}{
+				"type":           "ai_batch_request_completed",
+				"timestamp":      time.Now().UnixMilli(),
+				"request_id":     clog.GetVal(ctx, "request_id"),
+				"pipeline":       monitor.ToPipeline(capName),
+				"model_id":       modelID,
+				"success":        resp != nil,
+				"tries":          tries,
+				"duration_ms":    time.Since(start).Milliseconds(),
+				"orch_url":       orchURL,
+				"latency_score":  latencyScore,
+				"price_per_unit": pricePerUnit,
+				"error_type":     errType,
+				"error":          errMsg,
+			})
+		}()
+	}
+
 	for tries < maxTries {
 		select {
 		case <-cctx.Done():
@@ -1539,6 +1700,7 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 			}
 		}
 
+		lastSess = sess
 		resp, err = submitFn(ctx, params, sess)
 		if err == nil {
 			params.sessManager.Complete(ctx, sess)
@@ -1602,6 +1764,27 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 		return nil, &ServiceUnavailableError{err: errors.New(errMsg)}
 	}
 	return resp, nil
+}
+
+// batchAIRequestErrorType returns the error_type string for ai_batch_request_completed.
+// Returns "" on success (retErr == nil). cctx is used to distinguish deadline-exceeded
+// ServiceUnavailableErrors (timeout) from exhausted-orchestrator ones (no_orchestrators).
+func batchAIRequestErrorType(retErr error, cctx context.Context) string {
+	if retErr == nil {
+		return ""
+	}
+	var bre *BadRequestError
+	if errors.As(retErr, &bre) {
+		return "bad_request"
+	}
+	var sue *ServiceUnavailableError
+	if errors.As(retErr, &sue) {
+		if cctx != nil && errors.Is(cctx.Err(), context.DeadlineExceeded) {
+			return "timeout"
+		}
+		return "no_orchestrators"
+	}
+	return "worker_error"
 }
 
 // isRetryableError checks if the error is a transient error that can be retried.
