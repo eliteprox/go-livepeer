@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"math/rand"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -221,7 +222,7 @@ func NewAISessionSelector(ctx context.Context, cap core.Capability, modelID stri
 	penalty := 3
 	var warmSel, coldSel BroadcastSessionsSelector
 	var autoClear bool
-	if cap == core.Capability_LiveVideoToVideo {
+	if cap == core.Capability_LiveVideoToVideo || os.Getenv("LIVEPEER_TESTER_GATEWAY_ENABLED") == "true" {
 		// For Realtime Video AI, we use a dedicated selection algorithm
 		selAlg := LiveSelectionAlgorithm{}
 		warmSel = NewSelector(stakeRdr, selAlg, node.OrchPerfScore, warmCaps)
@@ -257,7 +258,7 @@ func NewAISessionSelector(ctx context.Context, cap core.Capability, modelID stri
 
 	// Periodically refresh sessions for Live Video to Video in order to minimize the necessity of refreshing sessions
 	// when the AI process is started
-	if cap == core.Capability_LiveVideoToVideo {
+	if cap == core.Capability_LiveVideoToVideo || os.Getenv("LIVEPEER_TESTER_GATEWAY_ENABLED") == "true" {
 		startPeriodicRefresh(sel)
 	}
 
@@ -319,7 +320,7 @@ func (sel *AISessionSelector) Select(ctx context.Context) *AISession {
 		if sel.SelectorIsEmpty() {
 			clog.Infof(ctx, "refreshing sessions, no orchestrators in pools")
 			penalty := sel.penalty
-			if sel.cap == core.Capability_LiveVideoToVideo {
+			if sel.cap == core.Capability_LiveVideoToVideo || os.Getenv("LIVEPEER_TESTER_GATEWAY_ENABLED") == "true" {
 				// For AI Live Video to Video, we don't store penalty in the selector
 				penalty = aiLiveVideoToVideoPenalty
 			}
@@ -328,7 +329,7 @@ func (sel *AISessionSelector) Select(ctx context.Context) *AISession {
 			}
 		}
 
-		if sel.cap == core.Capability_LiveVideoToVideo {
+		if sel.cap == core.Capability_LiveVideoToVideo || os.Getenv("LIVEPEER_TESTER_GATEWAY_ENABLED") == "true" {
 			return sel.SelectorIsEmpty()
 		}
 

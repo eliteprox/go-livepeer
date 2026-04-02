@@ -146,15 +146,17 @@ func generateWhepUrl(streamName, requestID string) string {
 
 func aiMediaServerHandle[I, O any](ls *LivepeerServer, decoderFunc func(*I, *http.Request) error, processorFunc func(context.Context, aiRequestParams, I) (O, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orchestrator := getOrchestratorFromRequest(r)
 		remoteAddr := getRemoteAddr(r)
 		ctx := clog.AddVal(r.Context(), clog.ClientIP, remoteAddr)
 		requestID := string(core.RandomManifestID())
 		ctx = clog.AddVal(ctx, "request_id", requestID)
 
 		params := aiRequestParams{
-			node:        ls.LivepeerNode,
-			os:          drivers.NodeStorage.NewSession(requestID),
-			sessManager: ls.AISessionManager,
+			node:         ls.LivepeerNode,
+			os:           drivers.NodeStorage.NewSession(requestID),
+			sessManager:  ls.AISessionManager,
+			orchestrator: orchestrator,
 		}
 
 		var req I
@@ -301,6 +303,7 @@ func (ls *LivepeerServer) ImageToVideo() http.Handler {
 
 func (ls *LivepeerServer) LLM() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orchestrator := getOrchestratorFromRequest(r)
 		remoteAddr := getRemoteAddr(r)
 		ctx := clog.AddVal(r.Context(), clog.ClientIP, remoteAddr)
 		requestID := string(core.RandomManifestID())
@@ -318,12 +321,13 @@ func (ls *LivepeerServer) LLM() http.Handler {
 			return
 		}
 
-		clog.V(common.VERBOSE).Infof(ctx, "Received LLM request model_id=%v stream=%v", *req.Model, *req.Stream)
+		clog.V(common.VERBOSE).Infof(ctx, "Received LLM request model_id=%v", *req.Model)
 
 		params := aiRequestParams{
-			node:        ls.LivepeerNode,
-			os:          drivers.NodeStorage.NewSession(requestID),
-			sessManager: ls.AISessionManager,
+			node:         ls.LivepeerNode,
+			os:           drivers.NodeStorage.NewSession(requestID),
+			sessManager:  ls.AISessionManager,
+			orchestrator: orchestrator,
 		}
 
 		start := time.Now()
@@ -1453,4 +1457,8 @@ func sendHeartbeat(ctx context.Context, node *core.LivepeerNode, liveAIHeartbeat
 		clog.Errorf(ctx, "heartbeat: response body: %s", string(body))
 		return
 	}
+}
+func getOrchestratorFromRequest(r *http.Request) string {
+	qp := r.URL.Query()
+	return qp.Get("orchestrator")
 }

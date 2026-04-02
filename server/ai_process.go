@@ -12,6 +12,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -90,7 +91,8 @@ type aiRequestParams struct {
 	os          drivers.OSSession
 	sessManager *AISessionManager
 
-	liveParams *liveRequestParams
+	liveParams   *liveRequestParams
+	orchestrator string
 }
 
 // For live video pipelines
@@ -1681,7 +1683,7 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 		sess, err := params.sessManager.Select(ctx, cap, modelID)
 		if err != nil {
 			clog.Infof(ctx, "Error selecting session modelID=%v err=%v", modelID, err)
-			if cap == core.Capability_LiveVideoToVideo && sess != nil {
+			if (cap == core.Capability_LiveVideoToVideo || os.Getenv("LIVEPEER_TESTER_GATEWAY_ENABLED") == "true") && sess != nil {
 				// for live video, remove the session from the pool to avoid retrying it
 				params.sessManager.Remove(ctx, sess)
 			}
@@ -1695,6 +1697,14 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 			if params.liveParams.orchestrator != "" && !strings.Contains(sess.Transcoder(), params.liveParams.orchestrator) {
 				// user requested a specific orchestrator, so ignore all the others
 				clog.Infof(ctx, "Skipping orchestrator=%s because user request specific orchestrator=%s", sess.Transcoder(), params.liveParams.orchestrator)
+				retryableSessions = append(retryableSessions, sess)
+				continue
+			}
+		} else {
+			//TODO: handle the batch jobs passing a given orchestrator (perhaps refactor the liveparams to use orchestrator too?)
+			if params.orchestrator != "" && !strings.Contains(sess.Transcoder(), params.orchestrator) {
+				// user requested a specific orchestrator, so ignore all the others
+				clog.Infof(ctx, "Skipping orchestrator=%s because user request specific ai-batch orchestrator=%s", sess.Transcoder(), params.orchestrator)
 				retryableSessions = append(retryableSessions, sess)
 				continue
 			}
@@ -1717,7 +1727,7 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 		// retry some specific errors with another session. re-check for retryable errors in case max retries were hit above
 		if isRetryableError(err) || isInvalidTicketSenderNonce(err) || isNoCapacityError(err) {
 			clog.Infof(ctx, "Error submitting request with non-retryable error modelID=%v try=%v orch=%v err=%v", modelID, tries, sess.Transcoder(), err)
-			if cap == core.Capability_LiveVideoToVideo {
+			if cap == core.Capability_LiveVideoToVideo || os.Getenv("LIVEPEER_TESTER_GATEWAY_ENABLED") == "true" {
 				// for live video, remove the session from the pool to avoid retrying it
 				params.sessManager.Remove(ctx, sess)
 			} else {
@@ -1750,17 +1760,19 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 		if monitor.Enabled {
 			monitor.AIRequestError(errMsg, monitor.ToPipeline(capName), modelID, nil)
 		}
-		monitor.SendQueueEventAsync("stream_trace", map[string]interface{}{
-			"type":        "gateway_no_orchestrators_available",
-			"timestamp":   time.Now().UnixMilli(),
-			"stream_id":   params.liveParams.streamID,
-			"pipeline_id": params.liveParams.pipelineID,
-			"request_id":  params.liveParams.requestID,
-			"orchestrator_info": map[string]interface{}{
-				"address": "",
-				"url":     "",
-			},
-		})
+		if params.liveParams != nil {
+			monitor.SendQueueEventAsync("stream_trace", map[string]interface{}{
+				"type":        "gateway_no_orchestrators_available",
+				"timestamp":   time.Now().UnixMilli(),
+				"stream_id":   params.liveParams.streamID,
+				"pipeline_id": params.liveParams.pipelineID,
+				"request_id":  params.liveParams.requestID,
+				"orchestrator_info": map[string]interface{}{
+					"address": "",
+					"url":     "",
+				},
+			})
+		}
 		return nil, &ServiceUnavailableError{err: errors.New(errMsg)}
 	}
 	return resp, nil
