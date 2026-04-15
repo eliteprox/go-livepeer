@@ -956,3 +956,96 @@ func TestRemoteSigner_Discovery_RefreshesAfterInterval(t *testing.T) {
 		require.Equal([]string{"live-video-to-video/model-b"}, resp[0].Capabilities)
 	})
 }
+
+// TestRemoteSignerStatus verifies that the /status endpoint mirrors active signing sessions.
+func TestRemoteSignerStatus(t *testing.T) {
+	require := require.New(t)
+
+	ethClient := newTestEthClient(t)
+	node, _ := core.NewLivepeerNode(ethClient, "", nil)
+	node.NodeType = core.RemoteSignerNode
+	node.Balances = core.NewAddressBalances(1 * time.Minute)
+	node.Sender = newMockSender(mockSenderConfig{})
+	ls, err := NewLivepeerServer(t.Context(), "", node, false, "")
+	require.NoError(err)
+
+	getStatus := func() *common.NodeStatus {
+		req := httptest.NewRequest(http.MethodGet, "/status", nil)
+		rr := httptest.NewRecorder()
+		ls.statusHandler().ServeHTTP(rr, req)
+		require.Equal(http.StatusOK, rr.Code)
+		var status common.NodeStatus
+		require.NoError(json.NewDecoder(rr.Body).Decode(&status))
+		return &status
+	}
+
+	// Before any payment the manifests map should be empty.
+	status := getStatus()
+	require.Empty(status.Manifests)
+	require.Empty(status.StreamInfo)
+	require.Equal(core.LivepeerVersion, status.Version)
+
+	// Build a minimal but valid GenerateLivePayment request.
+	oInfo := &net.OrchestratorInfo{
+		Address:   ethClient.addr.Bytes(),
+		PriceInfo: &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1},
+		TicketParams: &net.TicketParams{
+			Recipient: pm.RandAddress().Bytes(),
+		},
+		AuthToken: stubAuthToken,
+	}
+	orchBlob, err := proto.Marshal(oInfo)
+	require.NoError(err)
+	const manifestID = "test-manifest-status"
+
+	reqPayload := RemotePaymentRequest{
+		Orchestrator: orchBlob,
+		ManifestID:   manifestID,
+		InPixels:     1,
+	}
+	body, err := json.Marshal(reqPayload)
+	require.NoError(err)
+
+	req := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	ls.GenerateLivePayment(rr, req)
+	require.Equal(http.StatusOK, rr.Code)
+
+	// After a successful payment the manifest should appear in /status.
+	status = getStatus()
+	require.Contains(status.Manifests, manifestID)
+	require.Contains(status.StreamInfo, manifestID)
+
+	// A second distinct manifest ID from a new session should also appear.
+	const manifestID2 = "test-manifest-status-2"
+	body2, err := json.Marshal(RemotePaymentRequest{
+		Orchestrator: orchBlob,
+		ManifestID:   manifestID2,
+		InPixels:     1,
+	})
+	require.NoError(err)
+	req2 := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(body2))
+	rr2 := httptest.NewRecorder()
+	ls.GenerateLivePayment(rr2, req2)
+	require.Equal(http.StatusOK, rr2.Code)
+
+	status = getStatus()
+	require.Contains(status.Manifests, manifestID)
+	require.Contains(status.Manifests, manifestID2)
+	require.Len(status.Manifests, 2)
+
+	// Manually expire one session; it should be excluded from the next /status response.
+	ls.remoteSignerSessionsMu.Lock()
+	for k, v := range ls.remoteSignerSessions {
+		if v.ManifestID == manifestID {
+			v.LastUpdate = time.Now().Add(-(remoteSignerSessionTimeout + time.Second))
+			ls.remoteSignerSessions[k] = v
+		}
+	}
+	ls.remoteSignerSessionsMu.Unlock()
+
+	status = getStatus()
+	require.NotContains(status.Manifests, manifestID)
+	require.Contains(status.Manifests, manifestID2)
+	require.Len(status.Manifests, 1)
+}

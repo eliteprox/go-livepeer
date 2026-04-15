@@ -133,6 +133,10 @@ type LivepeerServer struct {
 	outSegmentTimeout    time.Duration
 
 	byocSrv *byoc.BYOCGatewayServer
+
+	// Remote signer session tracking
+	remoteSignerSessions   map[string]*RemotePaymentState
+	remoteSignerSessionsMu sync.RWMutex
 }
 
 func (s *LivepeerServer) SetContextFromUnitTest(c context.Context) {
@@ -196,6 +200,7 @@ func NewLivepeerServer(ctx context.Context, rtmpAddr string, lpNode *core.Livepe
 		serverLock:              &sync.RWMutex{},
 		rtmpConnections:         make(map[core.ManifestID]*rtmpConnection),
 		internalManifests:       make(map[core.ManifestID]core.ManifestID),
+		remoteSignerSessions:    make(map[string]*RemotePaymentState),
 		recordingsAuthResponses: cache.New(time.Hour, 2*time.Hour),
 		AISessionManager:        NewAISessionManager(lpNode, AISessionManagerTTL),
 		mediaMTXApiPassword:     lpNode.MediaMTXApiPassword,

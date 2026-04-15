@@ -41,6 +41,10 @@ func (s *LivepeerServer) healthzHandler() http.Handler {
 // Status
 func (s *LivepeerServer) statusHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.LivepeerNode != nil && s.LivepeerNode.NodeType == core.RemoteSignerNode {
+			respondJson(w, s.getRemoteSignerStatus())
+			return
+		}
 		respondJson(w, s.GetNodeStatus())
 	})
 }

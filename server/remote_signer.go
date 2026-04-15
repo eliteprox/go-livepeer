@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -17,11 +18,13 @@ import (
 	"github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"github.com/livepeer/go-livepeer/clog"
+	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
 	lpcrypto "github.com/livepeer/go-livepeer/crypto"
 	"github.com/livepeer/go-livepeer/monitor"
 	"github.com/livepeer/go-livepeer/net"
 	"github.com/livepeer/lpms/stream"
+	"github.com/livepeer/m3u8"
 )
 
 const HTTPStatusRefreshSession = 480
@@ -29,6 +32,10 @@ const HTTPStatusPriceExceeded = 481
 const HTTPStatusNoTickets = 482
 const RemoteType_LiveVideoToVideo = "lv2v"
 const PipelineLiveVideoToVideo = "live-video-to-video"
+
+// remoteSignerSessionTimeout is how long after the last payment update a
+// signing session is considered active.
+const remoteSignerSessionTimeout = 5 * time.Minute
 
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
 func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Request) {
@@ -68,11 +75,81 @@ func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(results)
 }
 
+// trackRemoteSignerSession upserts the active signing session keyed by stateID
+// and removes stale sessions.
+func (ls *LivepeerServer) trackRemoteSignerSession(state *RemotePaymentState) {
+	if state == nil {
+		return
+	}
+
+	now := time.Now()
+	deadline := now.Add(-remoteSignerSessionTimeout)
+
+	ls.remoteSignerSessionsMu.Lock()
+	defer ls.remoteSignerSessionsMu.Unlock()
+	if ls.remoteSignerSessions == nil {
+		ls.remoteSignerSessions = make(map[string]*RemotePaymentState)
+	}
+
+	// Upsert this session.
+	stateCopy := *state
+	if stateCopy.LastUpdate.IsZero() {
+		stateCopy.LastUpdate = now
+	}
+	ls.remoteSignerSessions[state.StateID] = &stateCopy
+
+	// Piggyback cleanup of expired sessions.
+	for k, v := range ls.remoteSignerSessions {
+		if v.LastUpdate.Before(deadline) {
+			delete(ls.remoteSignerSessions, k)
+		}
+	}
+}
+
+// getRemoteSignerStatus returns a NodeStatus populated with currently active
+// signing sessions so the /status endpoint mirrors the gateway behaviour.
+func (ls *LivepeerServer) getRemoteSignerStatus() *common.NodeStatus {
+	deadline := time.Now().Add(-remoteSignerSessionTimeout)
+
+	manifests := make(map[string]*m3u8.MasterPlaylist)
+	streamInfo := make(map[string]common.StreamInfo)
+
+	ls.remoteSignerSessionsMu.RLock()
+	for _, sess := range ls.remoteSignerSessions {
+		if sess.ManifestID == "" {
+			continue
+		}
+		if sess.LastUpdate.Before(deadline) {
+			continue
+		}
+		manifests[sess.ManifestID] = nil
+		streamInfo[sess.ManifestID] = common.StreamInfo{}
+	}
+	ls.remoteSignerSessionsMu.RUnlock()
+
+	return &common.NodeStatus{
+		Manifests:             manifests,
+		InternalManifests:     make(map[string]string),
+		StreamInfo:            streamInfo,
+		OrchestratorPool:      []string{},
+		RegisteredTranscoders: []common.RemoteTranscoderInfo{},
+		LocalTranscoding:      false,
+		BroadcasterPrices:     ls.LivepeerNode.GetBasePrices(),
+		Version:               core.LivepeerVersion,
+		GolangRuntimeVersion:  runtime.Version(),
+		GOArch:                runtime.GOARCH,
+		GOOS:                  runtime.GOOS,
+	}
+}
+
 // StartRemoteSignerServer starts the HTTP server for remote signer mode
 func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
 	// Register the remote signer endpoints
 	ls.HTTPMux.Handle("POST /sign-orchestrator-info", http.HandlerFunc(ls.SignOrchestratorInfo))
 	ls.HTTPMux.Handle("POST /generate-live-payment", http.HandlerFunc(ls.GenerateLivePayment))
+	ls.HTTPMux.Handle("GET /status", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJson(w, ls.getRemoteSignerStatus())
+	}))
 	if ls.LivepeerNode.RemoteDiscovery {
 		rdp := RemoteDiscoveryConfig{
 			Pool:     ls.LivepeerNode.OrchestratorPool,
@@ -139,6 +216,7 @@ type OrchInfoSigResponse struct {
 // Treated as an opaque, signed blob by the gateway.
 type RemotePaymentState struct {
 	StateID              string
+	ManifestID           string
 	PMSessionID          string
 	LastUpdate           time.Time
 	OrchestratorAddress  ethcommon.Address
@@ -480,6 +558,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	}
 	state.Balance = newBal.RatString()
 	state.LastUpdate = time.Now()
+	state.ManifestID = manifestID
 	state.PMSessionID = sess.PMSessionID
 	state.SenderNonce, err = sender.Nonce(sess.PMSessionID)
 	if err != nil {
@@ -537,6 +616,9 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			"num_tickets":        balUpdate.NumTickets,
 		})
 	}
+
+	// Track this session so /status can report active streams.
+	ls.trackRemoteSignerSession(state)
 
 	// Return payment (tickets), creds and signed state
 	resp := RemotePaymentResponse{
