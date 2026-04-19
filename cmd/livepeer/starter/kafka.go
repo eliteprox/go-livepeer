@@ -16,6 +16,11 @@ func startKafkaProducer(cfg LivepeerConfig) error {
 		gatewayHost = *cfg.GatewayHost
 	}
 
+	channelSize := lpmon.DefaultKafkaChannelSize
+	if cfg.KafkaChannelSize != nil && *cfg.KafkaChannelSize > 0 {
+		channelSize = *cfg.KafkaChannelSize
+	}
+
 	return lpmon.InitKafkaProducer(
 		*cfg.KafkaBootstrapServers,
 		*cfg.KafkaUsername,
@@ -23,5 +28,6 @@ func startKafkaProducer(cfg LivepeerConfig) error {
 		*cfg.KafkaGatewayTopic,
 		gatewayHost,
 		*cfg.KafkaSASLMechanism,
+		channelSize,
 	)
 }

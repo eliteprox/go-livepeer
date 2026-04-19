@@ -178,6 +178,8 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 	ctx := bsg.streamPipelineContext(streamID)
 	ctx = clog.AddVal(ctx, "stream_id", streamID)
 
+	logPublicMetricsEntry(ctx, gatewayJob)
+
 	params, err := bsg.streamPipelineParams(streamID)
 	if err != nil {
 		clog.Errorf(ctx, "Error getting stream request params: %s", err)
@@ -196,6 +198,12 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 
 		ctx = clog.AddVal(ctx, "orch", hexutil.Encode(orch.TicketParams.Recipient))
 		ctx = clog.AddVal(ctx, "orch_url", orch.ServiceAddr)
+
+		var streamOptionsFilter map[string]string
+		if gatewayJob.Job.Params != nil {
+			streamOptionsFilter = gatewayJob.Job.Params.OptionsFilter
+		}
+		logPublicMetricsOrch(ctx, gatewayJob.Job.Req.Capability, orch.Address(), streamOptionsFilter, orch.WorkerOptions)
 
 		err = gatewayJob.sign()
 		if err != nil {

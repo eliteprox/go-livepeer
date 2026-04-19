@@ -5,6 +5,9 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang/glog"
@@ -16,17 +19,27 @@ import (
 )
 
 const (
-	KafkaBatchInterval  = 1 * time.Second
-	KafkaRequestTimeout = 60 * time.Second
-	KafkaBatchSize      = 100
-	KafkaChannelSize    = 100
+	KafkaBatchInterval        = 1 * time.Second
+	KafkaRequestTimeout       = 60 * time.Second
+	KafkaBatchSize            = 100
+	KafkaDialTimeout          = 10 * time.Second
+	KafkaMaxAttempts          = 3
+	KafkaShutdownDrainTimeout = 30 * time.Second
+	// DefaultKafkaChannelSize is the fallback buffer size used when a non-positive
+	// value is passed to InitKafkaProducer.
+	DefaultKafkaChannelSize = 10000
 )
 
 type KafkaProducer struct {
 	writer         *kafka.Writer
+	transport      *kafka.Transport
 	topic          string
 	events         chan GatewayEvent
 	gatewayAddress string
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	closed         atomic.Bool
 }
 
 type GatewayEvent struct {
@@ -56,20 +69,39 @@ type PipelineStatus struct {
 
 var kafkaProducer *KafkaProducer
 
-func InitKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism string) error {
-	producer, err := newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism)
+func InitKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism string, channelSize int) error {
+	producer, err := newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism, channelSize)
 	if err != nil {
 		return err
 	}
 	kafkaProducer = producer
-	go producer.processEvents()
+	producer.wg.Add(1)
+	go producer.drain()
 	return nil
 }
 
-func newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism string) (*KafkaProducer, error) {
-	dialer := &kafka.Dialer{
-		Timeout:   KafkaRequestTimeout,
-		DualStack: true,
+// ShutdownKafkaProducer stops the drain goroutine, flushes the underlying Kafka
+// writer, and waits for in-flight writes to complete. Safe to call when no
+// producer was initialized.
+func ShutdownKafkaProducer(ctx context.Context) {
+	p := kafkaProducer
+	if p == nil {
+		return
+	}
+	p.shutdown(ctx)
+}
+
+func newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, saslMechanism string, channelSize int) (*KafkaProducer, error) {
+	if channelSize <= 0 {
+		channelSize = DefaultKafkaChannelSize
+	}
+
+	transport := &kafka.Transport{
+		Dial: (&net.Dialer{
+			Timeout:   KafkaDialTimeout,
+			DualStack: true,
+		}).DialContext,
+		DialTimeout: KafkaDialTimeout,
 	}
 
 	if user != "" && password != "" {
@@ -90,79 +122,124 @@ func newKafkaProducer(bootstrapServers, user, password, topic, gatewayAddress, s
 		default:
 			mechanism = &plain.Mechanism{Username: user, Password: password}
 		}
-		dialer.SASLMechanism = mechanism
-		dialer.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
+		transport.SASL = mechanism
+		transport.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
-	writer := kafka.NewWriter(kafka.WriterConfig{
-		Brokers:  []string{bootstrapServers},
-		Topic:    topic,
-		Balancer: kafka.CRC32Balancer{},
-		Dialer:   dialer,
-	})
-
-	return &KafkaProducer{
-		writer:         writer,
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &KafkaProducer{
 		topic:          topic,
-		events:         make(chan GatewayEvent, KafkaChannelSize),
+		events:         make(chan GatewayEvent, channelSize),
 		gatewayAddress: gatewayAddress,
-	}, nil
+		transport:      transport,
+		ctx:            ctx,
+		cancel:         cancel,
+	}
+
+	p.writer = &kafka.Writer{
+		Addr:         kafka.TCP(bootstrapServers),
+		Topic:        topic,
+		Balancer:     kafka.CRC32Balancer{},
+		Transport:    transport,
+		Async:        true,
+		BatchSize:    KafkaBatchSize,
+		BatchTimeout: KafkaBatchInterval,
+		WriteTimeout: KafkaRequestTimeout,
+		MaxAttempts:  KafkaMaxAttempts,
+		Completion: func(messages []kafka.Message, err error) {
+			if err == nil {
+				return
+			}
+			glog.Errorf("kafka async write failed, count=%d, topic=%s, err=%v", len(messages), topic, err)
+			KafkaWriteError(len(messages))
+		},
+	}
+
+	glog.Infof("kafka producer initialized: topic=%s channelSize=%d batchSize=%d batchTimeout=%s",
+		topic, channelSize, KafkaBatchSize, KafkaBatchInterval)
+
+	return p, nil
 }
 
-func (p *KafkaProducer) processEvents() {
-	ticker := time.NewTicker(KafkaBatchInterval)
-	defer ticker.Stop()
+// drain reads events from the buffered channel and hands them to the async
+// kafka writer. WriteMessages returns immediately because the writer is in
+// async mode, so this goroutine never blocks on broker latency.
+func (p *KafkaProducer) drain() {
+	defer p.wg.Done()
+	for {
+		select {
+		case <-p.ctx.Done():
+			p.drainRemaining()
+			return
+		case event := <-p.events:
+			p.write(event)
+		}
+	}
+}
 
-	var eventsBatch []kafka.Message
-
+func (p *KafkaProducer) drainRemaining() {
 	for {
 		select {
 		case event := <-p.events:
-			value, err := json.Marshal(event)
-			if err != nil {
-				glog.Errorf("error while marshalling gateway log to Kafka, err=%v", err)
-				continue
-			}
-
-			msg := kafka.Message{
-				Key:   []byte(*event.ID),
-				Value: value,
-			}
-			eventsBatch = append(eventsBatch, msg)
-
-			// Send batch if it reaches the defined size
-			if len(eventsBatch) >= KafkaBatchSize {
-				p.sendBatch(eventsBatch)
-				eventsBatch = nil
-			}
-
-		case <-ticker.C:
-			if len(eventsBatch) > 0 {
-				p.sendBatch(eventsBatch)
-				eventsBatch = nil
-			}
+			p.write(event)
+		default:
+			return
 		}
 	}
 }
 
-func (p *KafkaProducer) sendBatch(eventsBatch []kafka.Message) {
-	// We retry sending messages to Kafka in case of a failure
-	kafkaWriteRetries := 3
-	var writeErr error
-	for i := 0; i < kafkaWriteRetries; i++ {
-		writeErr = p.writer.WriteMessages(context.Background(), eventsBatch...)
-		if writeErr == nil {
-			return
-		}
-		glog.Warningf("error while sending gateway log batch to Kafka, retrying, topic=%s, try=%d, err=%v", p.topic, i, writeErr)
+func (p *KafkaProducer) write(event GatewayEvent) {
+	value, err := json.Marshal(event)
+	if err != nil {
+		glog.Errorf("error while marshalling gateway log to Kafka, err=%v", err)
+		return
 	}
-	if writeErr != nil {
-		glog.Errorf("error while sending gateway log batch to Kafka, the gateway logs are lost, err=%v", writeErr)
+	msg := kafka.Message{
+		Key:   []byte(*event.ID),
+		Value: value,
 	}
+	if err := p.writer.WriteMessages(context.Background(), msg); err != nil {
+		// In Async mode this only fires for synchronous validation errors
+		// (e.g. closed writer); transport/broker errors go to Completion.
+		glog.Warningf("kafka enqueue failed, topic=%s, err=%v", p.topic, err)
+		KafkaWriteError(1)
+	}
+}
+
+func (p *KafkaProducer) shutdown(ctx context.Context) {
+	if !p.closed.CompareAndSwap(false, true) {
+		return
+	}
+
+	p.cancel()
+
+	doneCh := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(doneCh)
+	}()
+
+	timeout := KafkaShutdownDrainTimeout
+	select {
+	case <-doneCh:
+	case <-ctx.Done():
+		glog.Warningf("kafka producer shutdown: parent context cancelled before drain finished")
+	case <-time.After(timeout):
+		glog.Warningf("kafka producer shutdown: drain did not complete within %s", timeout)
+	}
+
+	if err := p.writer.Close(); err != nil {
+		glog.Errorf("kafka producer shutdown: writer close error: %v", err)
+	}
+	if p.transport != nil {
+		p.transport.CloseIdleConnections()
+	}
+	glog.Infof("kafka producer shutdown complete")
 }
 
 func SendQueueEventAsync(eventType string, data interface{}) {
-	if kafkaProducer == nil {
+	p := kafkaProducer
+	if p == nil || p.closed.Load() {
 		return
 	}
 
@@ -171,14 +248,14 @@ func SendQueueEventAsync(eventType string, data interface{}) {
 
 	event := GatewayEvent{
 		ID:        stringPtr(randomID),
-		Gateway:   stringPtr(kafkaProducer.gatewayAddress),
+		Gateway:   stringPtr(p.gatewayAddress),
 		Type:      &eventType,
 		Timestamp: stringPtr(fmt.Sprint(timestampMs)),
 		Data:      data,
 	}
 
 	select {
-	case kafkaProducer.events <- event:
+	case p.events <- event:
 	default:
 		glog.Warningf("kafka producer event queue is full, dropping event %q", eventType)
 		KafkaEventSendError(eventType)

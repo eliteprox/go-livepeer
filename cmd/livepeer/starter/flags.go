@@ -148,6 +148,7 @@ func NewLivepeerConfig(fs *flag.FlagSet) LivepeerConfig {
 	cfg.KafkaPassword = fs.String("kafkaPassword", *cfg.KafkaPassword, "Kafka Password")
 	cfg.KafkaGatewayTopic = fs.String("kafkaGatewayTopic", *cfg.KafkaGatewayTopic, "Kafka Topic used to send gateway logs")
 	cfg.KafkaSASLMechanism = fs.String("kafkaSASLMechanism", *cfg.KafkaSASLMechanism, "Kafka SASL mechanism: plain, scram-sha-256, scram-sha-512")
+	cfg.KafkaChannelSize = fs.Int("kafkaChannelSize", *cfg.KafkaChannelSize, "Buffer size for the in-memory queue between event producers and the Kafka writer; events are dropped when full")
 
 	return cfg
 }

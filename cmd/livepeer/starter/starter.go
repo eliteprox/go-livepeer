@@ -181,6 +181,7 @@ type LivepeerConfig struct {
 	KafkaPassword              *string
 	KafkaGatewayTopic          *string
 	KafkaSASLMechanism         *string
+	KafkaChannelSize           *int
 	MediaMTXApiPassword        *string
 	LiveAIAuthApiKey           *string
 	LiveAIHeartbeatURL         *string
@@ -316,6 +317,7 @@ func DefaultLivepeerConfig() LivepeerConfig {
 	defaultKafkaPassword := ""
 	defaultKafkaGatewayTopic := ""
 	defaultKafkaSASLMechanism := "plain"
+	defaultKafkaChannelSize := lpmon.DefaultKafkaChannelSize
 
 	return LivepeerConfig{
 		// Network & Addresses:
@@ -441,6 +443,7 @@ func DefaultLivepeerConfig() LivepeerConfig {
 		KafkaPassword:         &defaultKafkaPassword,
 		KafkaGatewayTopic:     &defaultKafkaGatewayTopic,
 		KafkaSASLMechanism:    &defaultKafkaSASLMechanism,
+		KafkaChannelSize:      &defaultKafkaChannelSize,
 	}
 }
 
@@ -2019,6 +2022,7 @@ func StartLivepeer(ctx context.Context, cfg LivepeerConfig) {
 		return
 	case <-ctx.Done():
 		srv.Shutdown(ctx)
+		lpmon.ShutdownKafkaProducer(ctx)
 		return
 	}
 }

@@ -55,6 +55,9 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 
 	ctx = clog.AddVal(ctx, "job_id", gatewayJob.Job.Req.ID)
 	ctx = clog.AddVal(ctx, "capability", gatewayJob.Job.Req.Capability)
+
+	logPublicMetricsEntry(ctx, gatewayJob)
+
 	// Read the original request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -67,6 +70,12 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 	//the loop ends on Gateway error and bad request errors
 	for attemptIdx, orchToken := range gatewayJob.Orchs {
 		workerResourceRoute := r.URL.Path
+
+		var optionsFilter map[string]string
+		if gatewayJob.Job.Params != nil {
+			optionsFilter = gatewayJob.Job.Params.OptionsFilter
+		}
+		logPublicMetricsOrch(ctx, gatewayJob.Job.Req.Capability, orchToken.Address(), optionsFilter, orchToken.WorkerOptions)
 
 		err := gatewayJob.sign()
 		if err != nil {
