@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,6 +33,8 @@ const HTTPStatusNoTickets = 482
 const RemoteType_LiveVideoToVideo = "lv2v"
 const PipelineLiveVideoToVideo = "live-video-to-video"
 const RemoteType_BYOC = "byoc"
+const byocJobEthAddressHeader = "Livepeer-Eth-Address"
+const byocJobCapabilityHeader = "Livepeer-Capability"
 
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
 func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +74,13 @@ func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(results)
 }
 
-// SignBYOCJobRequest signs a BYOC job using the V1 binary format (FlattenBYOCJob).
+// SignBYOCJobRequest signs a BYOC job using the legacy V0 payload (Request+Parameters).
+//
+// TEMPORARY: V0 is kept here for network compatibility with orchestrators that have not
+// yet shipped V1 structured BYOC signing (commit 4b0cf2fb). The orchestrator's
+// verifyJobCreds tries V1 first and falls back to V0, so this signer signing V0 works
+// against both old and new orchestrators during rollout. Switch back to V1
+// (byoc.FlattenBYOCJob) once all orchestrators are known to accept V1.
 type SignBYOCJobRequestInput struct {
 	ID             string `json:"id"`
 	Capability     string `json:"capability"`
@@ -109,13 +119,11 @@ func (ls *LivepeerServer) SignBYOCJobRequest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	sigPayload := byoc.FlattenBYOCJob(&byoc.BYOCJobSigningInput{
-		ID:             req.ID,
-		Capability:     req.Capability,
-		Request:        req.Request,
-		Parameters:     req.Parameters,
-		TimeoutSeconds: req.TimeoutSeconds,
-	})
+	// TEMPORARY: legacy V0 flatten is just Request+Parameters concatenated (no domain
+	// separator, no length prefixes). Kept for compatibility with orchestrators that
+	// do not yet understand V1. Remove along with the V0 fallback in
+	// byoc/job_orchestrator.go:verifyJobCreds once the network is fully on V1.
+	sigPayload := []byte(req.Request + req.Parameters)
 
 	sig, err := gw.Sign(sigPayload)
 	if err != nil {
@@ -214,6 +222,9 @@ type RemotePaymentState struct {
 	InitialPricePerUnit  int64
 	InitialPixelsPerUnit int64
 	SequenceNumber       uint64
+	BYOCCapability       string
+	BYOCPrice            *net.PriceInfo
+	BYOCTicketParams     *net.TicketParams
 }
 
 type RemotePaymentStateSig struct {
@@ -238,6 +249,9 @@ type RemotePaymentRequest struct {
 
 	// Job type to automatically calculate payments. Valid values: `lv2v`, `byoc`. Optional.
 	Type string `json:"type"`
+
+	// BYOC capability name. Required when type is `byoc`.
+	Capability string `json:"capability,omitempty"`
 
 	// Capabilities to include in the ticket. Optional; may be set for the lv2v job type.
 	Capabilities []byte `json:"capabilities"`
@@ -275,34 +289,74 @@ func verifyStateSignature(ls *LivepeerServer, stateBytes []byte, sig []byte) err
 	return nil
 }
 
-// resolvePriceInfo returns the effective PriceInfo for a payment request.
-// For BYOC, pricing may only be advertised in CapabilitiesPrices rather than the
-// top-level PriceInfo, so we search for a matching capability-specific entry.
-func resolvePriceInfo(oInfo *net.OrchestratorInfo, reqType string, manifestID string) *net.PriceInfo {
-	top := oInfo.PriceInfo
-	if reqType != RemoteType_BYOC {
-		return top
+func (ls *LivepeerServer) getBYOCJobSender() (*byoc.JobSender, error) {
+	if ls == nil || ls.LivepeerNode == nil {
+		return nil, fmt.Errorf("missing livepeer node")
+	}
+	gw := core.NewBroadcaster(ls.LivepeerNode)
+	orchReq, err := genOrchestratorReq(gw, GetOrchestratorInfoParams{})
+	if err != nil {
+		return nil, err
+	}
+	addr := ethcommon.BytesToAddress(orchReq.Address)
+	return &byoc.JobSender{
+		Addr: addr.Hex(),
+		Sig:  "0x" + hex.EncodeToString(orchReq.Sig),
+	}, nil
+}
+
+func (ls *LivepeerServer) fetchBYOCToken(ctx context.Context, transcoderURL string, capability string) (*byoc.JobToken, error) {
+	if capability == "" {
+		return nil, fmt.Errorf("missing byoc capability")
+	}
+	if transcoderURL == "" {
+		return nil, fmt.Errorf("missing transcoder in OrchestratorInfo")
 	}
 
-	if top != nil && top.PricePerUnit > 0 && top.PixelsPerUnit > 0 &&
-		top.Capability == uint32(core.Capability_BYOC) && top.Constraint != "" {
-		return top
+	orchURL, err := url.Parse(transcoderURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid orchestrator transcoder URL: %w", err)
+	}
+	tokenURL := orchURL.ResolveReference(&url.URL{Path: "/process/token"})
+
+	jobSender, err := ls.getBYOCJobSender()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build BYOC sender header: %w", err)
+	}
+	jobSenderJSON, err := json.Marshal(jobSender)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal BYOC sender header: %w", err)
 	}
 
-	for _, cp := range oInfo.CapabilitiesPrices {
-		if cp == nil || cp.PricePerUnit == 0 || cp.PixelsPerUnit == 0 {
-			continue
-		}
-		if cp.Capability != uint32(core.Capability_BYOC) {
-			continue
-		}
-		if manifestID != "" && cp.Constraint != manifestID {
-			continue
-		}
-		return cp
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create BYOC token request: %w", err)
+	}
+	tokenReq.Header.Set(byocJobEthAddressHeader, base64.StdEncoding.EncodeToString(jobSenderJSON))
+	tokenReq.Header.Set(byocJobCapabilityHeader, capability)
+
+	tokenResp, err := httpClient.Do(tokenReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get BYOC token from orchestrator: %w", err)
+	}
+	defer tokenResp.Body.Close()
+
+	if tokenResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(tokenResp.Body)
+		return nil, fmt.Errorf("orchestrator returned %d while fetching BYOC token: %s", tokenResp.StatusCode, string(body))
 	}
 
-	return top
+	var token byoc.JobToken
+	if err := json.NewDecoder(tokenResp.Body).Decode(&token); err != nil {
+		return nil, fmt.Errorf("failed to decode BYOC token response: %w", err)
+	}
+	if token.Price == nil || token.Price.PricePerUnit == 0 || token.Price.PixelsPerUnit == 0 {
+		return nil, fmt.Errorf("BYOC token missing valid price")
+	}
+	if token.TicketParams == nil {
+		return nil, fmt.Errorf("BYOC token missing ticket params")
+	}
+	return &token, nil
 }
 
 // GenerateLivePayment handles remote generation of a payment for live streams.
@@ -340,25 +394,6 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	priceInfo := resolvePriceInfo(&oInfo, req.Type, req.ManifestID)
-	if priceInfo == nil || priceInfo.PricePerUnit == 0 || priceInfo.PixelsPerUnit == 0 {
-		detail := "missing or zero priceInfo"
-		if req.Type == RemoteType_BYOC {
-			detail = fmt.Sprintf("missing or zero priceInfo for BYOC capability %q; "+
-				"ensure the orchestrator advertises capability-specific pricing "+
-				"(CapabilitiesPrices with Capability=BYOC and Constraint=<name>)",
-				req.ManifestID)
-		}
-		err := errors.New(detail)
-		respondJsonError(ctx, w, err, http.StatusBadRequest)
-		return
-	}
-	if oInfo.TicketParams == nil {
-		err := fmt.Errorf("missing ticketParams in OrchestratorInfo")
-		respondJsonError(ctx, w, err, http.StatusBadRequest)
-		return
-	}
-
 	orchAddr := ethcommon.BytesToAddress(oInfo.Address)
 
 	// Load or initialize state
@@ -387,11 +422,68 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		state.SequenceNumber++
 	} else {
 		state = &RemotePaymentState{
-			StateID:              string(core.RandomManifestID()),
-			OrchestratorAddress:  orchAddr,
-			InitialPricePerUnit:  priceInfo.PricePerUnit,
-			InitialPixelsPerUnit: priceInfo.PixelsPerUnit,
+			StateID:             string(core.RandomManifestID()),
+			OrchestratorAddress: orchAddr,
 		}
+	}
+
+	priceInfo := oInfo.PriceInfo
+	ticketParams := oInfo.TicketParams
+	if req.Type == RemoteType_BYOC {
+		if req.Capability == "" {
+			err = errors.New("missing capability")
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+		if oInfo.Transcoder == "" {
+			err = errors.New("missing transcoder in OrchestratorInfo")
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+
+		if hasState &&
+			state.BYOCCapability == req.Capability &&
+			state.BYOCPrice != nil &&
+			state.BYOCPrice.PricePerUnit > 0 &&
+			state.BYOCPrice.PixelsPerUnit > 0 &&
+			state.BYOCTicketParams != nil {
+			priceInfo = state.BYOCPrice
+			ticketParams = state.BYOCTicketParams
+		} else {
+			token, tokenErr := ls.fetchBYOCToken(ctx, oInfo.Transcoder, req.Capability)
+			if tokenErr != nil {
+				respondJsonError(ctx, w, tokenErr, http.StatusInternalServerError)
+				return
+			}
+			state.BYOCCapability = req.Capability
+			state.BYOCPrice = token.Price
+			state.BYOCTicketParams = token.TicketParams
+			priceInfo = token.Price
+			ticketParams = token.TicketParams
+		}
+	}
+	if priceInfo == nil || priceInfo.PricePerUnit == 0 || priceInfo.PixelsPerUnit == 0 {
+		err := errors.New("missing or zero priceInfo")
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
+	if ticketParams == nil {
+		err := fmt.Errorf("missing ticketParams in OrchestratorInfo")
+		if req.Type == RemoteType_BYOC {
+			err = fmt.Errorf("missing ticket params for BYOC capability %q", req.Capability)
+		}
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
+	if !hasState {
+		state.InitialPricePerUnit = priceInfo.PricePerUnit
+		state.InitialPixelsPerUnit = priceInfo.PixelsPerUnit
+	}
+	if req.Type == RemoteType_BYOC {
+		// Keep the session's OrchestratorInfo aligned with BYOC token data so
+		// refresh validation and payment generation use token-derived params.
+		oInfo.PriceInfo = priceInfo
+		oInfo.TicketParams = ticketParams
 	}
 
 	stateID := core.ManifestID(state.StateID)
@@ -399,12 +491,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	ctx = clog.AddVal(ctx, "seqNo", fmt.Sprintf("%d", state.SequenceNumber))
 
 	manifestID := req.ManifestID
-	byocCapability := ""
-	if req.Type == RemoteType_BYOC {
-		if priceInfo.Capability == uint32(core.Capability_BYOC) && priceInfo.Constraint != "" {
-			byocCapability = priceInfo.Constraint
-		}
-	}
+	byocCapability := req.Capability
 	if manifestID == "" {
 		if hasState {
 			// Required for lv2v so stateful requests stay tied to the same id.
@@ -435,7 +522,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		streamParams.Capabilities = core.CapabilitiesFromNetCapabilities(&caps)
 	}
 
-	pmParams := pmTicketParams(oInfo.TicketParams)
+	pmParams := pmTicketParams(ticketParams)
 	if pmParams == nil {
 		err := fmt.Errorf("failed to derive ticket params from OrchestratorInfo")
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
@@ -507,8 +594,8 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	} else if req.Type == RemoteType_BYOC {
 		// BYOC uses time-based pricing: price per unit of time (typically seconds)
 		// The pixelsPerUnit in the price info represents the time scaling factor
-		if byocCapability == "" {
-			err = errors.New("missing BYOC capability in OrchestratorInfo price_info.constraint")
+		if req.Capability == "" {
+			err = errors.New("missing capability")
 			respondJsonError(ctx, w, err, http.StatusBadRequest)
 			return
 		}

@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/golang/protobuf/proto"
+	"github.com/livepeer/go-livepeer/byoc"
 	"github.com/livepeer/go-livepeer/common"
 	"github.com/livepeer/go-livepeer/core"
 	"github.com/livepeer/go-livepeer/eth"
@@ -224,22 +225,15 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 			wantMsg:    "invalid job type",
 		},
 		{
-			name: "byoc missing capability constraint",
+			name: "byoc missing capability",
 			req: func() RemotePaymentRequest {
-				oInfo := proto.Clone(baseOrchInfo).(*net.OrchestratorInfo)
-				oInfo.PriceInfo = &net.PriceInfo{
-					PricePerUnit:  1,
-					PixelsPerUnit: 1,
-					Capability:    uint32(core.Capability_BYOC),
-					Constraint:    "",
-				}
 				return RemotePaymentRequest{
-					Orchestrator: makeOrchBlob(oInfo),
+					Orchestrator: makeOrchBlob(baseOrchInfo),
 					Type:         RemoteType_BYOC,
 				}
 			}(),
 			wantStatus: http.StatusBadRequest,
-			wantMsg:    "missing BYOC capability in OrchestratorInfo price_info.constraint",
+			wantMsg:    "missing capability",
 		},
 		{
 			name: "missing pixels without type",
@@ -339,30 +333,133 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 	}
 }
 
-func TestResolvePriceInfo_BYOCUsesCapabilitiesPrices(t *testing.T) {
+func TestGenerateLivePayment_BYOC_TokenFetchError(t *testing.T) {
 	require := require.New(t)
 
-	byocPrice := &net.PriceInfo{
-		PricePerUnit:  9,
-		PixelsPerUnit: 1,
-		Capability:    uint32(core.Capability_BYOC),
-		Constraint:    "acme/model",
-	}
+	ethClient := newTestEthClient(t)
+	node, _ := core.NewLivepeerNode(ethClient, "", nil)
+	node.Balances = core.NewAddressBalances(1 * time.Minute)
+	node.Sender = newMockSender(mockSenderConfig{ev: big.NewRat(1000, 1)})
+	ls := &LivepeerServer{LivepeerNode: node}
 
-	oInfo := &net.OrchestratorInfo{
+	orchInfo := &net.OrchestratorInfo{
+		Address:    ethcommon.HexToAddress("0x1").Bytes(),
+		Transcoder: "http://127.0.0.1:1",
+		PriceInfo:  &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1},
+		TicketParams: &net.TicketParams{
+			Recipient: pm.RandAddress().Bytes(),
+		},
+		AuthToken: stubAuthToken,
+	}
+	orchBlob, err := proto.Marshal(orchInfo)
+	require.NoError(err)
+
+	reqBody, err := json.Marshal(RemotePaymentRequest{
+		Orchestrator: orchBlob,
+		Type:         RemoteType_BYOC,
+		Capability:   "acme/model",
+	})
+	require.NoError(err)
+
+	req := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(reqBody))
+	rr := httptest.NewRecorder()
+	ls.GenerateLivePayment(rr, req)
+
+	require.Equal(http.StatusInternalServerError, rr.Code)
+	var apiErr apiErrorResponse
+	require.NoError(json.NewDecoder(rr.Body).Decode(&apiErr))
+	require.Contains(apiErr.Error.Message, "failed to get BYOC token from orchestrator")
+}
+
+func TestGenerateLivePayment_BYOC_FetchesTokenAndCachesState(t *testing.T) {
+	require := require.New(t)
+
+	ethClient := newTestEthClient(t)
+	node, _ := core.NewLivepeerNode(ethClient, "", nil)
+	node.Balances = core.NewAddressBalances(1 * time.Minute)
+	node.Sender = newMockSender(mockSenderConfig{ev: big.NewRat(1000, 1)})
+	ls := &LivepeerServer{LivepeerNode: node}
+
+	tokenCalls := 0
+	recipient := pm.RandAddress().Bytes()
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/process/token" {
+			http.NotFound(w, r)
+			return
+		}
+		tokenCalls++
+		require.Equal(http.MethodGet, r.Method)
+		require.Equal("acme/model", r.Header.Get(byocJobCapabilityHeader))
+		require.NotEmpty(r.Header.Get(byocJobEthAddressHeader))
+		json.NewEncoder(w).Encode(byoc.JobToken{
+			Price: &net.PriceInfo{
+				PricePerUnit:  2,
+				PixelsPerUnit: 1,
+			},
+			TicketParams: &net.TicketParams{
+				Recipient: recipient,
+			},
+		})
+	}))
+	defer tokenServer.Close()
+
+	orchInfo := &net.OrchestratorInfo{
+		Address:    ethcommon.HexToAddress("0x1").Bytes(),
+		Transcoder: tokenServer.URL,
 		PriceInfo: &net.PriceInfo{
-			PricePerUnit:  3,
+			PricePerUnit:  999,
 			PixelsPerUnit: 1,
 		},
-		CapabilitiesPrices: []*net.PriceInfo{
-			byocPrice,
+		TicketParams: &net.TicketParams{
+			Recipient: pm.RandAddress().Bytes(),
 		},
+		AuthToken: stubAuthToken,
+	}
+	orchBlob, err := proto.Marshal(orchInfo)
+	require.NoError(err)
+
+	request := func(state RemotePaymentStateSig) RemotePaymentResponse {
+		reqBody, err := json.Marshal(RemotePaymentRequest{
+			Orchestrator: orchBlob,
+			Type:         RemoteType_BYOC,
+			Capability:   "acme/model",
+			State:        state,
+		})
+		require.NoError(err)
+
+		req := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(reqBody))
+		rr := httptest.NewRecorder()
+		ls.GenerateLivePayment(rr, req)
+		require.Equal(http.StatusOK, rr.Code)
+
+		var resp RemotePaymentResponse
+		require.NoError(json.NewDecoder(rr.Body).Decode(&resp))
+		return resp
 	}
 
-	require.Same(byocPrice, resolvePriceInfo(oInfo, RemoteType_BYOC, ""))
-	require.Same(byocPrice, resolvePriceInfo(oInfo, RemoteType_BYOC, "acme/model"))
-	require.Same(oInfo.PriceInfo, resolvePriceInfo(oInfo, RemoteType_BYOC, "other/model"))
-	require.Same(oInfo.PriceInfo, resolvePriceInfo(oInfo, RemoteType_LiveVideoToVideo, ""))
+	resp1 := request(RemotePaymentStateSig{})
+	require.Equal(1, tokenCalls)
+
+	var state1 RemotePaymentState
+	require.NoError(json.Unmarshal(resp1.State.State, &state1))
+	require.Equal("acme/model", state1.BYOCCapability)
+	require.NotNil(state1.BYOCPrice)
+	require.NotNil(state1.BYOCTicketParams)
+
+	resp2 := request(resp1.State)
+	require.Equal(1, tokenCalls, "expected BYOC token to be reused from signed state")
+
+	var state2 RemotePaymentState
+	require.NoError(json.Unmarshal(resp2.State.State, &state2))
+	require.Equal(uint64(1), state2.SequenceNumber)
+
+	paymentBytes, err := base64.StdEncoding.DecodeString(resp2.Payment)
+	require.NoError(err)
+	var payment net.Payment
+	require.NoError(proto.Unmarshal(paymentBytes, &payment))
+	require.NotNil(payment.ExpectedPrice)
+	require.EqualValues(2, payment.ExpectedPrice.PricePerUnit)
+	require.EqualValues(1, payment.ExpectedPrice.PixelsPerUnit)
 }
 
 func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
@@ -560,7 +657,7 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 	node.Sender = sender
 	ls := &LivepeerServer{LivepeerNode: node}
 
-	doPayment := func(reqPayload RemotePaymentRequest) (RemotePaymentResponse, net.Payment) {
+	doPayment := func(reqPayload RemotePaymentRequest) (RemotePaymentResponse, *net.Payment) {
 		reqBody, err := json.Marshal(reqPayload)
 		require.NoError(err)
 
@@ -579,7 +676,7 @@ func TestGenerateLivePayment_LV2V_Succeeds(t *testing.T) {
 		var payment net.Payment
 		require.NoError(proto.Unmarshal(paymentBytes, &payment))
 
-		return resp, payment
+		return resp, &payment
 	}
 
 	ev, err := sender.EV("pmSession")

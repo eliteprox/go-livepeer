@@ -4,11 +4,13 @@ package byoc
 // duplicated from server package with minimal changes to be used with byoc package.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	gonet "net"
@@ -31,16 +33,18 @@ import (
 var sendJobReqWithTimeout = sendReqWithTimeout
 
 func (g *gatewayJob) sign() error {
+	if g.node != nil && g.node.RemoteSignerUrl != nil {
+		return g.signViaRemoteSigner()
+	}
 	//sign the request
 	gateway := g.node.OrchestratorPool.Broadcaster()
 
-	sigPayload := FlattenBYOCJob(&BYOCJobSigningInput{
-		ID:             g.Job.Req.ID,
-		Capability:     g.Job.Req.Capability,
-		Request:        g.Job.Req.Request,
-		Parameters:     g.Job.Req.Parameters,
-		TimeoutSeconds: g.Job.Req.Timeout,
-	})
+	// TEMPORARY: emit legacy V0 payload (Request+Parameters) so this gateway can talk
+	// to orchestrators that do not yet accept the V1 structured BYOC signing format.
+	// The orchestrator's verifyJobCreds already falls back to V0, and the remote
+	// signer's SignBYOCJobRequest also emits V0 for the same reason. Switch back to
+	// FlattenBYOCJob (V1) once the network has rolled out V1 support everywhere.
+	sigPayload := []byte(g.Job.Req.Request + g.Job.Req.Parameters)
 
 	sig, err := gateway.Sign(sigPayload)
 	if err != nil {
@@ -56,6 +60,61 @@ func (g *gatewayJob) sign() error {
 	}
 	g.SignedJobReq = base64.StdEncoding.EncodeToString(jobReqEncoded)
 
+	return nil
+}
+
+// signViaRemoteSigner delegates BYOC job signing to the gateway's configured remote signer
+// so the Livepeer header sender matches the signature (see RemoteEthAddr vs local keystore).
+func (g *gatewayJob) signViaRemoteSigner() error {
+	u := g.node.RemoteSignerUrl.ResolveReference(&url2.URL{Path: "/sign-byoc-job"})
+	type remoteSignReq struct {
+		ID             string `json:"id"`
+		Capability     string `json:"capability"`
+		Request        string `json:"request"`
+		Parameters     string `json:"parameters"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
+	}
+	body, err := json.Marshal(remoteSignReq{
+		ID:             g.Job.Req.ID,
+		Capability:     g.Job.Req.Capability,
+		Request:        g.Job.Req.Request,
+		Parameters:     g.Job.Req.Parameters,
+		TimeoutSeconds: g.Job.Req.Timeout,
+	})
+	if err != nil {
+		return errors.Errorf("Unable to encode sign-byoc-job body err=%v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return errors.Errorf("Unable to create sign-byoc-job request err=%v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return errors.Errorf("Unable to reach remote signer err=%v", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return errors.Errorf("Remote signer sign-byoc-job failed status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+	var out struct {
+		Sender    string `json:"sender"`
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return errors.Errorf("Unable to decode sign-byoc-job response err=%v", err)
+	}
+	if out.Sender == "" || out.Signature == "" {
+		return errors.Errorf("Remote signer response missing sender or signature")
+	}
+	g.Job.Req.Sender = out.Sender
+	g.Job.Req.Sig = out.Signature
+	jobReqEncoded, err := json.Marshal(g.Job.Req)
+	if err != nil {
+		return errors.Errorf("Unable to encode job request err=%v", err)
+	}
+	g.SignedJobReq = base64.StdEncoding.EncodeToString(jobReqEncoded)
 	return nil
 }
 
