@@ -115,6 +115,9 @@ type (
 		kProfile                      tag.Key
 		kProfiles                     tag.Key
 		kErrorCode                    tag.Key
+		kCapability                   tag.Key
+		kReason                       tag.Key
+		kOutcome                      tag.Key
 		kTry                          tag.Key
 		kSender                       tag.Key
 		kRecipient                    tag.Key
@@ -163,6 +166,9 @@ type (
 		mHTTPClientTimeout2           *stats.Int64Measure
 		mKafkaEventSendError          *stats.Int64Measure
 		mKafkaWriteError              *stats.Int64Measure
+		mBYOCRequestErrors            *stats.Int64Measure
+		mBYOCRequestDuration          *stats.Float64Measure
+		mBYOCOrchestratorsAvailable   *stats.Int64Measure
 		mRealtimeRatio                *stats.Float64Measure
 		mRealtime3x                   *stats.Int64Measure
 		mRealtime2x                   *stats.Int64Measure
@@ -293,6 +299,9 @@ func InitCensus(nodeType NodeType, version string) {
 	census.kProfile = tag.MustNewKey("profile")
 	census.kProfiles = tag.MustNewKey("profiles")
 	census.kErrorCode = tag.MustNewKey("error_code")
+	census.kCapability = tag.MustNewKey("capability")
+	census.kReason = tag.MustNewKey("reason")
+	census.kOutcome = tag.MustNewKey("outcome")
 	census.kTry = tag.MustNewKey("try")
 	census.kSender = tag.MustNewKey("sender")
 	census.kRecipient = tag.MustNewKey("recipient")
@@ -318,6 +327,9 @@ func InitCensus(nodeType NodeType, version string) {
 	census.mHTTPClientTimeout2 = stats.Int64("http_client_timeout_2", "Number of times HTTP connection was dropped before transcoded segments was sent back to client", "tot")
 	census.mKafkaEventSendError = stats.Int64("kafka_event_send_errors", "Dropped Kafka events due to a full queue", "tot")
 	census.mKafkaWriteError = stats.Int64("kafka_write_errors", "Kafka messages that failed to be written by the async producer", "tot")
+	census.mBYOCRequestErrors = stats.Int64("byoc_request_errors", "BYOC gateway request failures, classified by reason", "tot")
+	census.mBYOCRequestDuration = stats.Float64("byoc_request_duration_seconds", "End-to-end BYOC gateway request duration in seconds", "sec")
+	census.mBYOCOrchestratorsAvailable = stats.Int64("byoc_orchestrators_available", "Number of orchestrators available to serve a BYOC capability at request time", "orchs")
 	census.mRealtimeRatio = stats.Float64("http_client_segment_transcoded_realtime_ratio", "Ratio of source segment duration / transcode time as measured on HTTP client", "rat")
 	census.mRealtime3x = stats.Int64("http_client_segment_transcoded_realtime_3x", "Number of segment transcoded 3x faster than realtime", "tot")
 	census.mRealtime2x = stats.Int64("http_client_segment_transcoded_realtime_2x", "Number of segment transcoded 2x faster than realtime", "tot")
@@ -524,6 +536,27 @@ func InitCensus(nodeType NodeType, version string) {
 			Description: "Kafka messages that failed to be written by the async producer",
 			TagKeys:     baseTags,
 			Aggregation: view.Sum(),
+		},
+		{
+			Name:        "byoc_request_errors",
+			Measure:     census.mBYOCRequestErrors,
+			Description: "BYOC gateway request failures, classified by reason",
+			TagKeys:     append([]tag.Key{census.kCapability, census.kReason}, baseTags...),
+			Aggregation: view.Sum(),
+		},
+		{
+			Name:        "byoc_request_duration_seconds",
+			Measure:     census.mBYOCRequestDuration,
+			Description: "End-to-end BYOC gateway request duration in seconds",
+			TagKeys:     append([]tag.Key{census.kCapability, census.kOutcome}, baseTags...),
+			Aggregation: view.Distribution(0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+		},
+		{
+			Name:        "byoc_orchestrators_available",
+			Measure:     census.mBYOCOrchestratorsAvailable,
+			Description: "Number of orchestrators available to serve a BYOC capability at request time",
+			TagKeys:     append([]tag.Key{census.kCapability}, baseTags...),
+			Aggregation: view.LastValue(),
 		},
 		{
 			Name:        "http_client_segment_transcoded_realtime_ratio",
@@ -1839,6 +1872,65 @@ func KafkaWriteError(count int) {
 		return
 	}
 	stats.Record(census.ctx, census.mKafkaWriteError.M(int64(count)))
+}
+
+// BYOCRequestError increments the BYOC gateway request error counter for the
+// given capability, classified by a closed-set reason (e.g. "setup_failed",
+// "no_orchestrators", "all_orchs_failed", "orch_4xx", "stream_failed"). Reason
+// values must come from a bounded vocabulary to keep cardinality low.
+func BYOCRequestError(capability, reason string) {
+	if !Enabled || census.mBYOCRequestErrors == nil {
+		return
+	}
+	if capability == "" {
+		capability = "unknown"
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	if err := stats.RecordWithTags(census.ctx,
+		[]tag.Mutator{tag.Insert(census.kCapability, capability), tag.Insert(census.kReason, reason)},
+		census.mBYOCRequestErrors.M(1)); err != nil {
+		glog.Errorf("Error recording metrics err=%q", err)
+	}
+}
+
+// BYOCRequestDuration records the end-to-end duration of a BYOC gateway
+// request. Outcome is "success" or "failure" so success/error latency
+// distributions stay separate.
+func BYOCRequestDuration(capability string, success bool, duration time.Duration) {
+	if !Enabled || census.mBYOCRequestDuration == nil {
+		return
+	}
+	if capability == "" {
+		capability = "unknown"
+	}
+	outcome := "failure"
+	if success {
+		outcome = "success"
+	}
+	if err := stats.RecordWithTags(census.ctx,
+		[]tag.Mutator{tag.Insert(census.kCapability, capability), tag.Insert(census.kOutcome, outcome)},
+		census.mBYOCRequestDuration.M(duration.Seconds())); err != nil {
+		glog.Errorf("Error recording metrics err=%q", err)
+	}
+}
+
+// BYOCOrchestratorsAvailable records the number of orchestrators that matched a
+// capability at orchestrator-discovery time. A value of 0 indicates a capacity
+// outage for that capability and is the canonical alerting signal.
+func BYOCOrchestratorsAvailable(capability string, count int) {
+	if !Enabled || census.mBYOCOrchestratorsAvailable == nil {
+		return
+	}
+	if capability == "" {
+		capability = "unknown"
+	}
+	if err := stats.RecordWithTags(census.ctx,
+		[]tag.Mutator{tag.Insert(census.kCapability, capability)},
+		census.mBYOCOrchestratorsAvailable.M(int64(count))); err != nil {
+		glog.Errorf("Error recording metrics err=%q", err)
+	}
 }
 
 // Deposit records the current deposit for the gateway

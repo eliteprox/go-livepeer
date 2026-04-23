@@ -46,6 +46,7 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 
 	gatewayJob, err := bsg.setupGatewayJob(ctx, r.Header.Get(jobRequestHdr), r.Header.Get(jobOrchSearchTimeoutHdr), r.Header.Get(jobOrchSearchRespTimeoutHdr), false)
 	if err != nil {
+		monitor.BYOCRequestError("", "setup_failed")
 		clog.Errorf(ctx, "Error setting up job: %s", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -55,6 +56,15 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 
 	ctx = clog.AddVal(ctx, "job_id", gatewayJob.Job.Req.ID)
 	ctx = clog.AddVal(ctx, "capability", gatewayJob.Job.Req.Capability)
+
+	requestStart := time.Now()
+	requestErr := "all_orchs_failed"
+	defer func() {
+		monitor.BYOCRequestDuration(gatewayJob.Job.Req.Capability, requestErr == "", time.Since(requestStart))
+		if requestErr != "" {
+			monitor.BYOCRequestError(gatewayJob.Job.Req.Capability, requestErr)
+		}
+	}()
 
 	logPublicMetricsEntry(ctx, gatewayJob)
 
@@ -129,6 +139,7 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 			if code < 500 {
 				//assume non retryable bad request
 				//return error response from the worker
+				requestErr = "orch_4xx"
 				http.Error(w, string(data), code)
 				return
 			}
@@ -172,6 +183,7 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 					"url":     orchToken.ServiceAddr,
 				},
 			})
+			requestErr = ""
 			w.Write(data)
 			return
 		} else {
@@ -254,6 +266,7 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 					"url":     orchToken.ServiceAddr,
 				},
 			})
+			requestErr = ""
 		}
 	}
 }
@@ -390,6 +403,7 @@ func (bsg *BYOCGatewayServer) setupGatewayJob(ctx context.Context, jobReqHdr str
 		//get pool of Orchestrators that can do the job
 		orchs, err = getJobOrchestrators(ctx, bsg.node, jobReq.Capability, jobParams, jobReq.OrchSearchTimeout, jobReq.OrchSearchRespTimeout)
 		if err != nil {
+			monitor.BYOCOrchestratorsAvailable(jobReq.Capability, 0)
 			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
 				"type":       "job_orchestrator_discovery_result",
 				"capability": jobReq.Capability,
@@ -401,6 +415,7 @@ func (bsg *BYOCGatewayServer) setupGatewayJob(ctx context.Context, jobReqHdr str
 		}
 
 		if len(orchs) == 0 {
+			monitor.BYOCOrchestratorsAvailable(jobReq.Capability, 0)
 			monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
 				"type":       "job_orchestrator_discovery_result",
 				"capability": jobReq.Capability,
@@ -411,6 +426,7 @@ func (bsg *BYOCGatewayServer) setupGatewayJob(ctx context.Context, jobReqHdr str
 			return nil, errors.New(fmt.Sprintf("No orchestrators found for capability %v", jobReq.Capability))
 		}
 
+		monitor.BYOCOrchestratorsAvailable(jobReq.Capability, len(orchs))
 		monitor.SendQueueEventAsync("job_gateway", map[string]interface{}{
 			"type":       "job_orchestrator_discovery_result",
 			"capability": jobReq.Capability,

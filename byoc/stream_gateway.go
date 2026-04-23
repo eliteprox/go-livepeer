@@ -163,6 +163,7 @@ func (bsg *BYOCGatewayServer) runStream(gatewayJob *gatewayJob) {
 		errStr := ""
 		if exitErr != nil {
 			errStr = exitErr.Error()
+			monitor.BYOCRequestError(gatewayJob.Job.Req.Capability, "stream_failed")
 		}
 		monitor.SendQueueEventAsync("stream_trace", map[string]interface{}{
 			"type":        "stream_stopped",
