@@ -16,6 +16,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
+	"github.com/livepeer/go-livepeer/byoc"
 	"github.com/livepeer/go-livepeer/clog"
 	"github.com/livepeer/go-livepeer/core"
 	lpcrypto "github.com/livepeer/go-livepeer/crypto"
@@ -28,7 +29,7 @@ const HTTPStatusRefreshSession = 480
 const HTTPStatusPriceExceeded = 481
 const HTTPStatusNoTickets = 482
 const RemoteType_LiveVideoToVideo = "lv2v"
-const RemoteType_ByocRequest = "byoc-request"
+const RemoteType_BYOC = "byoc-request"
 const PipelineLiveVideoToVideo = "live-video-to-video"
 
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
@@ -69,11 +70,75 @@ func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(results)
 }
 
+// SignBYOCJobRequestInput is the JSON body for POST /sign-byoc-job.
+// Fields are bound by [byoc.FlattenBYOCJob] into the V1 signing payload.
+type SignBYOCJobRequestInput struct {
+	ID             string `json:"id"`
+	Capability     string `json:"capability"`
+	Request        string `json:"request"`
+	Parameters     string `json:"parameters"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+// SignBYOCJobRequestResponse is the JSON body returned by POST /sign-byoc-job.
+type SignBYOCJobRequestResponse struct {
+	Sender    string `json:"sender"`
+	Signature string `json:"signature"`
+}
+
+// SignBYOCJobRequest signs a BYOC job using the V1 binary format ([byoc.FlattenBYOCJob]).
+func (ls *LivepeerServer) SignBYOCJobRequest(w http.ResponseWriter, r *http.Request) {
+	ctx := clog.AddVal(r.Context(), "request_id", string(core.RandomManifestID()))
+	remoteAddr := getRemoteAddr(r)
+	clog.Info(ctx, "BYOC job signing request", "ip", remoteAddr)
+
+	gw := core.NewBroadcaster(ls.LivepeerNode)
+
+	var signReq SignBYOCJobRequestInput
+	if err := json.NewDecoder(r.Body).Decode(&signReq); err != nil {
+		clog.Errorf(ctx, "Failed to decode SignBYOCJobRequest err=%q", err)
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
+	if signReq.ID == "" || signReq.Capability == "" {
+		err := fmt.Errorf("sign-byoc-job requires non-empty id and capability")
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
+	if signReq.TimeoutSeconds <= 0 {
+		err := fmt.Errorf("sign-byoc-job requires positive timeout_seconds")
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
+
+	sigPayload := byoc.FlattenBYOCJob(&byoc.BYOCJobSigningInput{
+		ID:             signReq.ID,
+		Capability:     signReq.Capability,
+		Request:        signReq.Request,
+		Parameters:     signReq.Parameters,
+		TimeoutSeconds: signReq.TimeoutSeconds,
+	})
+	sig, err := gw.Sign(sigPayload)
+	if err != nil {
+		clog.Errorf(ctx, "Failed to sign BYOC job request err=%q", err)
+		respondJsonError(ctx, w, err, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(SignBYOCJobRequestResponse{
+		Sender:    gw.Address().Hex(),
+		Signature: "0x" + hex.EncodeToString(sig),
+	})
+}
+
 // StartRemoteSignerServer starts the HTTP server for remote signer mode
 func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
 	// Register the remote signer endpoints
 	ls.HTTPMux.Handle("POST /sign-orchestrator-info", http.HandlerFunc(ls.SignOrchestratorInfo))
 	ls.HTTPMux.Handle("POST /generate-live-payment", http.HandlerFunc(ls.GenerateLivePayment))
+	ls.HTTPMux.Handle("POST /sign-byoc-job", http.HandlerFunc(ls.SignBYOCJobRequest))
 	if ls.LivepeerNode.RemoteDiscovery {
 		rdp := RemoteDiscoveryConfig{
 			Pool:     ls.LivepeerNode.OrchestratorPool,
@@ -165,7 +230,8 @@ type RemotePaymentRequest struct {
 	Orchestrator []byte `json:"orchestrator"`
 
 	// Set if an ID is needed to tie into orch accounting for a session. Optional
-	ManifestID string
+	// JSON key "ManifestID" is used by python-gateway PaymentSession; keep in sync.
+	ManifestID string `json:"ManifestID,omitempty"`
 
 	// Number of pixels to generate a ticket for.
 	// Required if `type` is not set or is "byoc-request".
@@ -216,6 +282,33 @@ func verifyStateSignature(ls *LivepeerServer, stateBytes []byte, sig []byte) err
 	return nil
 }
 
+// resolvePriceInfo returns the effective PriceInfo for a payment request.
+// For BYOC, pricing may only be advertised in CapabilitiesPrices rather than the
+// top-level PriceInfo, so we search for a matching capability-specific entry.
+func resolvePriceInfo(oInfo *net.OrchestratorInfo, reqType string, manifestID string) *net.PriceInfo {
+	top := oInfo.PriceInfo
+	if reqType != RemoteType_BYOC {
+		return top
+	}
+	if top != nil && top.PricePerUnit > 0 && top.PixelsPerUnit > 0 &&
+		top.Capability == uint32(core.Capability_BYOC) && top.Constraint != "" {
+		return top
+	}
+	for _, cp := range oInfo.CapabilitiesPrices {
+		if cp == nil || cp.PricePerUnit == 0 || cp.PixelsPerUnit == 0 {
+			continue
+		}
+		if cp.Capability != uint32(core.Capability_BYOC) {
+			continue
+		}
+		if manifestID != "" && cp.Constraint != manifestID {
+			continue
+		}
+		return cp
+	}
+	return top
+}
+
 // GenerateLivePayment handles remote generation of a payment for live streams.
 func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Request) {
 	requestID := string(core.RandomManifestID())
@@ -250,9 +343,15 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
 		return
 	}
-	priceInfo := oInfo.PriceInfo
+	priceInfo := resolvePriceInfo(&oInfo, req.Type, req.ManifestID)
 	if priceInfo == nil || priceInfo.PricePerUnit == 0 || priceInfo.PixelsPerUnit == 0 {
-		err := fmt.Errorf("missing or zero priceInfo")
+		detail := "missing or zero priceInfo"
+		if req.Type == RemoteType_BYOC {
+			detail = fmt.Sprintf("missing or zero priceInfo for BYOC capability %q; "+
+				"ensure the orchestrator advertises capability-specific pricing "+
+				"(CapabilitiesPrices with Capability=BYOC and Constraint=<name>)", req.ManifestID)
+		}
+		err := errors.New(detail)
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
 		return
 	}
@@ -302,6 +401,12 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	ctx = clog.AddVal(ctx, "seqNo", fmt.Sprintf("%d", state.SequenceNumber))
 
 	manifestID := req.ManifestID
+	byocCapability := ""
+	if req.Type == RemoteType_BYOC {
+		if priceInfo.Capability == uint32(core.Capability_BYOC) && priceInfo.Constraint != "" {
+			byocCapability = priceInfo.Constraint
+		}
+	}
 	if manifestID == "" {
 		if hasState {
 			// Required for lv2v so stateful requests stay tied to the same id.
@@ -309,7 +414,11 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			respondJsonError(ctx, w, err, http.StatusBadRequest)
 			return
 		}
-		manifestID = string(core.RandomManifestID())
+		if req.Type == RemoteType_BYOC && byocCapability != "" {
+			manifestID = byocCapability
+		} else {
+			manifestID = string(core.RandomManifestID())
+		}
 	}
 	ctx = clog.AddVal(ctx, "manifest_id", manifestID)
 
@@ -381,34 +490,60 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	pixels := req.InPixels
 	now := time.Now()
-	lastUpdate := state.LastUpdate
-	if lastUpdate.IsZero() {
-		lastUpdate = now
-	}
-	billableSecs := now.Sub(lastUpdate).Seconds()
+	var (
+		pixels             int64
+		billableSecs       float64
+		lastUpdateForEvent time.Time
+	)
 	switch req.Type {
 	case RemoteType_LiveVideoToVideo:
-		info := defaultSegInfo
-		if billableSecs <= 0 {
-			// preload with 60 seconds of data for LV2V
-			billableSecs = (60 * time.Second).Seconds()
+		lastUpdate := state.LastUpdate
+		if lastUpdate.IsZero() {
+			lastUpdate = now
 		}
+		billable := now.Sub(lastUpdate).Seconds()
+		if billable <= 0 {
+			billable = (60 * time.Second).Seconds()
+		}
+		info := defaultSegInfo
 		pixelsPerSec := float64(info.Height) * float64(info.Width) * float64(info.FPS)
-		pixels = int64(pixelsPerSec * billableSecs) // pixels to charge for
-	case RemoteType_ByocRequest:
-		// BYOC batch request: caller computes and supplies the compute budget as
-		// InPixels. Under BYOC pricing, PixelsPerUnit denominates wei-per-second,
-		// so InPixels here represents "seconds of compute to pay for."
-		if req.InPixels <= 0 {
-			err = errors.New("byoc-request requires inPixels")
+		pixels = int64(pixelsPerSec * billable)
+		billableSecs = billable
+		lastUpdateForEvent = lastUpdate
+	case RemoteType_BYOC:
+		// Time-based units: "pixels" carry cumulative seconds × PixelsPerUnit; first call preloads
+		// 120s so balance clears the 60s orchestrator floor.
+		if byocCapability == "" {
+			err = errors.New("missing BYOC capability in OrchestratorInfo price_info.constraint")
 			respondJsonError(ctx, w, err, http.StatusBadRequest)
 			return
 		}
-		// pixels already initialised from req.InPixels above.
+		lastB := state.LastUpdate
+		if lastB.IsZero() {
+			lastB = now.Add(-120 * time.Second)
+		}
+		secSince := now.Sub(lastB).Seconds()
+		pixels = int64(secSince * float64(priceInfo.PixelsPerUnit))
+		if pixels < priceInfo.PixelsPerUnit {
+			pixels = priceInfo.PixelsPerUnit
+		}
+		billableSecs = secSince
+		lastUpdateForEvent = lastB
 	case "":
 		// Generic pre-computed path: caller must supply InPixels explicitly.
+		if req.InPixels <= 0 {
+			err = errors.New("missing inPixels for generic request")
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
+		pixels = req.InPixels
+		u := state.LastUpdate
+		if u.IsZero() {
+			u = now
+		}
+		billableSecs = now.Sub(u).Seconds()
+		lastUpdateForEvent = u
 	default:
 		err = errors.New("invalid job type")
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
@@ -547,8 +682,8 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			"pm_session_id":      sess.PMSessionID,
 			"current_time":       now.UTC(),
 			"current_time_unix":  now.UTC().UnixMilli(),
-			"previous_time":      lastUpdate.UTC(),
-			"previous_time_unix": lastUpdate.UTC().UnixMilli(),
+			"previous_time":      lastUpdateForEvent.UTC(),
+			"previous_time_unix": lastUpdateForEvent.UTC().UnixMilli(),
 			"billable_secs":      billableSecs,
 			"pixels":             pixels,
 			"session_balance":    newBal.FloatString(0),

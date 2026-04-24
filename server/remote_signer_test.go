@@ -234,15 +234,15 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 			wantMsg:    "missing pixels or job type",
 		},
 		{
-			name: "byoc-request without inPixels",
+			name: "byoc-request without BYOC price constraint",
 			req: func() RemotePaymentRequest {
 				r := baseReq()
-				r.Type = RemoteType_ByocRequest
+				r.Type = RemoteType_BYOC
 				r.InPixels = 0
 				return r
 			}(),
 			wantStatus: http.StatusBadRequest,
-			wantMsg:    "byoc-request requires inPixels",
+			wantMsg:    "missing BYOC capability in OrchestratorInfo price_info.constraint",
 		},
 		{
 			name: "num tickets exceeds limit",
@@ -966,4 +966,64 @@ func TestRemoteSigner_Discovery_RefreshesAfterInterval(t *testing.T) {
 		require.Equal("https://orch-b.example.com:8935", resp[0].Address)
 		require.Equal([]string{"live-video-to-video/model-b"}, resp[0].Capabilities)
 	})
+}
+
+func TestResolvePriceInfo(t *testing.T) {
+	require := require.New(t)
+	byocCap := uint32(core.Capability_BYOC)
+	top := &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1, Capability: byocCap, Constraint: "text-reversal"}
+	o := &net.OrchestratorInfo{PriceInfo: top}
+	p := resolvePriceInfo(o, RemoteType_BYOC, "text-reversal")
+	require.Equal(top, p)
+
+	o2 := &net.OrchestratorInfo{
+		PriceInfo: &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1},
+		CapabilitiesPrices: []*net.PriceInfo{
+			{PricePerUnit: 2, PixelsPerUnit: 1, Capability: byocCap, Constraint: "openai"},
+		},
+	}
+	p2 := resolvePriceInfo(o2, RemoteType_BYOC, "openai")
+	require.Equal(int64(2), p2.PricePerUnit)
+	require.Equal("openai", p2.Constraint)
+
+	p3 := resolvePriceInfo(o2, RemoteType_LiveVideoToVideo, "")
+	require.Equal(o2.PriceInfo, p3)
+}
+
+func TestSignBYOCJobRequest(t *testing.T) {
+	require := require.New(t)
+	tec := newTestEthClient(t)
+	node, _ := core.NewLivepeerNode(tec, "", nil)
+	ls := &LivepeerServer{LivepeerNode: node}
+
+	body := `{"id":"job1","capability":"text-reversal","request":"{}","parameters":"","timeout_seconds":30}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sign-byoc-job", bytes.NewReader([]byte(body)))
+	ls.SignBYOCJobRequest(rr, req)
+	require.Equal(http.StatusOK, rr.Code)
+	var out map[string]string
+	require.NoError(json.NewDecoder(rr.Body).Decode(&out))
+	require.NotEmpty(out["sender"])
+	require.Greater(len(out["signature"]), 4)
+}
+
+func TestSignBYOCJobRequest_Validation(t *testing.T) {
+	require := require.New(t)
+	tec := newTestEthClient(t)
+	node, _ := core.NewLivepeerNode(tec, "", nil)
+	ls := &LivepeerServer{LivepeerNode: node}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sign-byoc-job", bytes.NewReader([]byte(
+		`{"id":"","capability":"c","request":"","parameters":"","timeout_seconds":1}`,
+	)))
+	ls.SignBYOCJobRequest(rr, req)
+	require.Equal(http.StatusBadRequest, rr.Code)
+
+	rr2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/sign-byoc-job", bytes.NewReader([]byte(
+		`{"id":"a","capability":"c","request":"","parameters":"","timeout_seconds":0}`,
+	)))
+	ls.SignBYOCJobRequest(rr2, req2)
+	require.Equal(http.StatusBadRequest, rr2.Code)
 }
