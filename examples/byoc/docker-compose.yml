@@ -1,0 +1,24 @@
+# Orchestrator and gateway run on host for debugging.
+# Worker and register use host network so they reach orch/gateway at localhost.
+services:
+  worker:
+    image: byoc_reverse_text
+    container_name: byoc_reverse_text
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      BYOC_INSECURE_TLS: "1"
+    network_mode: host
+  register:
+    image: byoc_register_capability
+    build:
+      context: .
+      dockerfile: Dockerfile.register
+    network_mode: host
+    environment:
+      # Orchestrator on host; use ORCHESTRATOR_HOST for your host IP (e.g. 10.10.7.61)
+      ORCHESTRATOR_HOST: ${ORCHESTRATOR_HOST:-127.0.0.1}
+      ORCHESTRATOR_PORT: ${ORCHESTRATOR_PORT:-8935}
+    depends_on:
+      - worker

@@ -1,0 +1,9 @@
+FROM python:3.11-slim
+
+RUN pip install requests
+
+WORKDIR /app
+
+COPY register_capability.py .
+
+CMD ["python", "register_capability.py"]
