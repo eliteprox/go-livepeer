@@ -121,7 +121,7 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 				continue
 			}
 
-			gatewayBalance := updateGatewayBalance(bsg.node, orchToken, gatewayJob.Job.Req.ID, time.Since(start))
+			gatewayBalance := updateGatewayBalance(bsg.node, orchToken, core.ManifestID(gatewayJob.Job.Req.ID), time.Since(start))
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance)
 			w.Write(data)
 			return
@@ -186,7 +186,7 @@ func (bsg *BYOCGatewayServer) submitJob(ctx context.Context, w http.ResponseWrit
 				}
 			}
 
-			gatewayBalance := updateGatewayBalance(bsg.node, orchToken, gatewayJob.Job.Req.ID, time.Since(start))
+			gatewayBalance := updateGatewayBalance(bsg.node, orchToken, core.ManifestID(gatewayJob.Job.Req.ID), time.Since(start))
 
 			clog.V(common.SHORT).Infof(ctx, "Job processed successfully took=%v balance=%v balance_from_orch=%v", time.Since(start), gatewayBalance.FloatString(0), orchBalance.FloatString(0))
 		}

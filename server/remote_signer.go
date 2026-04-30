@@ -442,6 +442,11 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 
 	orchAddr := ethcommon.BytesToAddress(oInfo.Address)
 	manifestID := req.ManifestID
+	if req.Type == RemoteType_BYOC && manifestID == "" {
+		err := errors.New("missing manifestID")
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
 
 	// Load or initialize state
 	var state *RemotePaymentState
@@ -463,10 +468,19 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			respondJsonError(ctx, w, err, http.StatusBadRequest)
 			return
 		}
+		if req.Type == RemoteType_BYOC && state.StateID != manifestID {
+			err := errors.New("manifestID mismatch")
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
 		state.SequenceNumber++
 	} else {
+		stateID := string(core.RandomManifestID())
+		if req.Type == RemoteType_BYOC {
+			stateID = manifestID
+		}
 		state = &RemotePaymentState{
-			StateID:              string(core.RandomManifestID()),
+			StateID:              stateID,
 			OrchestratorAddress:  orchAddr,
 			InitialPricePerUnit:  priceInfo.PricePerUnit,
 			InitialPixelsPerUnit: priceInfo.PixelsPerUnit,
@@ -477,9 +491,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	ctx = clog.AddVal(ctx, "state_id", state.StateID)
 	ctx = clog.AddVal(ctx, "seqNo", fmt.Sprintf("%d", state.SequenceNumber))
 
-	if req.Type == RemoteType_BYOC {
-		manifestID = state.StateID
-	} else if manifestID == "" {
+	if req.Type != RemoteType_BYOC && manifestID == "" {
 		if hasState {
 			// Required for lv2v so stateful requests stay tied to the same id.
 			err := errors.New("missing manifestID")

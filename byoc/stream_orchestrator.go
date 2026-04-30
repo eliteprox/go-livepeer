@@ -69,6 +69,7 @@ func (bso *BYOCOrchestratorServer) StartStream() http.Handler {
 			eventsCh     *trickle.TrickleLocalPublisher
 			dataCh       *trickle.TrickleLocalPublisher
 		)
+		balanceMID := core.ManifestID(mid)
 		failedToStartStream := false
 
 		// reset trickle channels and release capacity on failure
@@ -171,8 +172,8 @@ func (bso *BYOCOrchestratorServer) StartStream() http.Handler {
 
 		statusCode, respBody := bso.processWorkerResp(ctx, orchJob.Req.Capability, resp)
 		if statusCode > 399 {
-			bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.ID)
-			w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, orchJob.Req.ID).FloatString(0))
+			bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, balanceMID)
+			w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, balanceMID).FloatString(0))
 			//return error response from the worker
 			w.WriteHeader(statusCode)
 			w.Write(respBody)
@@ -180,10 +181,10 @@ func (bso *BYOCOrchestratorServer) StartStream() http.Handler {
 			return
 		}
 
-		bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, orchJob.Req.ID)
-		w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, orchJob.Req.ID).FloatString(0))
+		bso.chargeForCompute(start, orchJob.JobPrice, orchJob.Sender, balanceMID)
+		w.Header().Set(jobPaymentBalanceHdr, bso.getPaymentBalance(orchJob.Sender, balanceMID).FloatString(0))
 
-		clog.V(common.SHORT).Infof(ctx, "stream start processed successfully took=%v balance=%v", time.Since(start), bso.getPaymentBalance(orchJob.Sender, orchJob.Req.ID).FloatString(0))
+		clog.V(common.SHORT).Infof(ctx, "stream start processed successfully took=%v balance=%v", time.Since(start), bso.getPaymentBalance(orchJob.Sender, balanceMID).FloatString(0))
 
 		//setup the stream
 		stream, err := bso.node.ExternalCapabilities.AddStream(orchJob.Req.ID, orchJob.Req.Capability, reqBodyBytes)
@@ -213,6 +214,7 @@ func (bso *BYOCOrchestratorServer) monitorOrchStream(job *orchJob) {
 	streamID := job.Req.ID
 	capability := job.Req.Capability
 	sender := job.Req.Sender
+	balanceMID := core.ManifestID(streamID)
 
 	stream, exists := bso.node.ExternalCapabilities.GetStream(streamID)
 	if !exists {
@@ -247,8 +249,8 @@ func (bso *BYOCOrchestratorServer) monitorOrchStream(job *orchJob) {
 				// balance is keyed per-stream (streamID) so concurrent
 				// streams from the same sender don't share a balance pool
 				extCap.Mu.Lock()
-				bso.orch.DebitFees(senderAddr, core.ManifestID(streamID), job.JobPrice, int64(pmtCheckDur.Seconds()))
-				senderBalance := bso.getPaymentBalance(senderAddr, streamID)
+				bso.orch.DebitFees(senderAddr, balanceMID, job.JobPrice, int64(pmtCheckDur.Seconds()))
+				senderBalance := bso.getPaymentBalance(senderAddr, balanceMID)
 				extCap.Mu.Unlock()
 				if senderBalance != nil {
 					if senderBalance.Cmp(big.NewRat(0, 1)) < 0 {
@@ -469,7 +471,7 @@ func (bso *BYOCOrchestratorServer) ProcessStreamPayment() http.Handler {
 
 		senderAddr := ethcommon.HexToAddress(orchJob.Req.Sender)
 
-		// Balance is keyed per-stream (Req.ID is the stream ID for stream payments).
+		// Balance is keyed per-stream (Req.ID is the stream id for stream payments).
 		streamBal := orch.Balance(senderAddr, core.ManifestID(orchJob.Req.ID))
 		if streamBal != nil {
 			streamBal, err = common.PriceToInt64(streamBal)

@@ -84,6 +84,7 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 	createTickets := true
 	clog.Infof(ctx, "creating payment for job request %s", jobReq.Capability)
 	sender := ethcommon.HexToAddress(jobReq.Sender)
+	balanceMID := core.ManifestID(jobReq.ID)
 
 	orchAddr := ethcommon.BytesToAddress(orchToken.TicketParams.Recipient)
 	sessionID := bsg.node.Sender.StartSession(*pmTicketParams(orchToken.TicketParams))
@@ -135,7 +136,7 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 		fv := big.NewRat(tickets.FaceValue.Int64(), 1)
 		pmtTotal := new(big.Rat).Mul(fv, winProb)
 		pmtTotal = new(big.Rat).Mul(pmtTotal, big.NewRat(int64(ticketCnt), 1))
-		bsg.node.Balances.Credit(orchAddr, core.ManifestID(jobReq.ID), pmtTotal)
+		bsg.node.Balances.Credit(orchAddr, balanceMID, pmtTotal)
 		//create the payment
 		payment = &net.Payment{
 			Sender:        sender.Bytes(),
@@ -158,7 +159,7 @@ func (bsg *BYOCGatewayServer) createPayment(ctx context.Context, jobReq *JobRequ
 		payment.TicketSenderParams = senderParams
 
 		ratPrice, _ := common.RatPriceInfo(payment.ExpectedPrice)
-		balanceForOrch := bsg.node.Balances.Balance(orchAddr, core.ManifestID(jobReq.ID))
+		balanceForOrch := bsg.node.Balances.Balance(orchAddr, balanceMID)
 		balanceForOrchStr := ""
 		if balanceForOrch != nil {
 			balanceForOrchStr = balanceForOrch.FloatString(3)
@@ -205,15 +206,14 @@ func ticketCountForCost(cost *big.Rat, ticketEv *big.Rat, timeoutSeconds int64) 
 }
 
 // updateGatewayBalance debits the gateway-side balance for a job by the cost
-// of the elapsed time. The balance is keyed per-job (jobID is used as the
-// ManifestID), giving each job its own isolated balance bucket.
-func updateGatewayBalance(node *core.LivepeerNode, orchToken JobToken, jobID string, took time.Duration) *big.Rat {
+// of the elapsed time. The balance is keyed per-job (core.ManifestID(jobReq.ID)).
+func updateGatewayBalance(node *core.LivepeerNode, orchToken JobToken, balanceKey core.ManifestID, took time.Duration) *big.Rat {
 	orchAddr := ethcommon.BytesToAddress(orchToken.TicketParams.Recipient)
 	orchPrice := big.NewRat(orchToken.Price.PricePerUnit, orchToken.Price.PixelsPerUnit)
 	cost := new(big.Rat).Mul(orchPrice, big.NewRat(int64(math.Ceil(took.Seconds())), 1))
-	node.Balances.Debit(orchAddr, core.ManifestID(jobID), cost)
+	node.Balances.Debit(orchAddr, balanceKey, cost)
 
-	balance := node.Balances.Balance(orchAddr, core.ManifestID(jobID))
+	balance := node.Balances.Balance(orchAddr, balanceKey)
 	if balance == nil {
 		return big.NewRat(0, 1)
 	}

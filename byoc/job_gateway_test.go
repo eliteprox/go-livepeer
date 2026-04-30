@@ -110,14 +110,16 @@ func TestCreatePayment(t *testing.T) {
 			sharedBalMtx: &sync.Mutex{},
 		}
 		mockSender := pm.MockSender{}
-		mockSender.On("StartSession", mock.Anything).Return("foo").Times(4)
+		mockSender.On("StartSession", mock.Anything).Return("foo").Times(3)
 		bsg.node.Sender = &mockSender
 
 		bsg.node.Balances = core.NewAddressBalances(5 * time.Second)
 		defer bsg.node.Balances.StopCleanup()
 
 		jobReq := JobRequest{
+			ID:         "job-1",
 			Capability: "test-payment-cap",
+			Timeout:    1,
 		}
 		sender := JobSender{
 			Addr: "0x1111111111111111111111111111111111111111",
@@ -156,17 +158,13 @@ func TestCreatePayment(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, 1, len(pmTickets.TicketSenderParams))
 
-		//test 2 tickets
-		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(2), nil).Once()
+		// sufficient per-job balance means no new tickets are created
 		payment, err = bsg.createPayment(ctx, &jobReq, &orchTocken)
 		assert.Nil(t, err)
-		pmPayment, err = base64.StdEncoding.DecodeString(payment)
-		assert.Nil(t, err)
-		err = proto.Unmarshal(pmPayment, &pmTickets)
-		assert.Nil(t, err)
-		assert.Equal(t, 2, len(pmTickets.TicketSenderParams))
+		assert.Equal(t, "", payment)
 
 		//test 600 tickets
+		jobReq.ID = "job-2"
 		jobReq.Timeout = 600
 		mockSender.On("CreateTicketBatch", "foo", jobReq.Timeout).Return(mockTicketBatch(600), nil).Once()
 		orchTocken.Price.PricePerUnit = 6000
@@ -196,6 +194,7 @@ func createTestPayment(capability string) (string, error) {
 	defer bsg.node.Balances.StopCleanup()
 
 	jobReq := JobRequest{
+		ID:         "payment-test-job",
 		Capability: capability,
 		Timeout:    1,
 	}

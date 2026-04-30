@@ -765,7 +765,7 @@ func TestGetJobToken_Success(t *testing.T) {
 	json.Unmarshal(body, &token)
 
 	assert.NotNil(t, token.TicketParams)
-	assert.Equal(t, int64(1000), token.Balance)
+	assert.Equal(t, int64(0), token.Balance)
 }
 
 func TestProcessJob_MethodNotAllowed(t *testing.T) {
@@ -910,7 +910,7 @@ func TestProcessPayment(t *testing.T) {
 			}
 
 			before := orch.Balance(sender, core.ManifestID(tc.capability)).FloatString(0)
-			bal, err := bso.processPayment(ctx, sender, tc.capability, tc.capability, testPmtHdr)
+			bal, err := bso.processPayment(ctx, sender, core.ManifestID(tc.capability), tc.capability, testPmtHdr)
 			after := orch.Balance(sender, core.ManifestID(tc.capability)).FloatString(0)
 			t.Logf("Balance before: %s, after: %s", before, after)
 			assert.NoError(t, err)
@@ -924,6 +924,47 @@ func TestProcessPayment(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProcessPayment_IsolatesBalancesByJobID(t *testing.T) {
+	ctx := context.Background()
+	sender := ethcommon.HexToAddress("0x1111111111111111111111111111111111111111")
+	capability := "shared-capability"
+	jobA := &JobRequest{ID: "job-a", Capability: capability}
+	jobB := &JobRequest{ID: "job-b", Capability: capability}
+
+	balances := map[core.ManifestID]*big.Rat{}
+	orch := newMockJobOrchestrator()
+	bso := &BYOCOrchestratorServer{node: orch.node, orch: orch, sharedBalMtx: &sync.Mutex{}}
+	orch.balance = func(addr ethcommon.Address, manifestID core.ManifestID) *big.Rat {
+		bal, ok := balances[manifestID]
+		if !ok {
+			return big.NewRat(0, 1)
+		}
+		return new(big.Rat).Set(bal)
+	}
+	orch.processPayment = func(ctx context.Context, payment net.Payment, manifestID core.ManifestID) error {
+		bal, ok := balances[manifestID]
+		if !ok {
+			bal = big.NewRat(0, 1)
+		}
+		balances[manifestID] = new(big.Rat).Add(bal, big.NewRat(120, 1))
+		return nil
+	}
+
+	paymentHdr, err := createTestPayment(capability)
+	assert.NoError(t, err)
+
+	_, err = bso.processPayment(ctx, sender, core.ManifestID(jobA.ID), capability, paymentHdr)
+	assert.NoError(t, err)
+
+	balA := bso.getPaymentBalance(sender, core.ManifestID(jobA.ID))
+	balB := bso.getPaymentBalance(sender, core.ManifestID(jobB.ID))
+	assert.Greater(t, balA.Cmp(big.NewRat(0, 1)), 0)
+	assert.Zero(t, balB.Cmp(big.NewRat(0, 1)))
+
+	err = bso.confirmPayment(ctx, sender, core.ManifestID(jobB.ID), capability, &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1}, "")
+	assert.Equal(t, errInsufficientBalance, err)
 }
 
 // marshalToString is a helper to marshal a struct to a JSON string
