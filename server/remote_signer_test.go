@@ -331,6 +331,53 @@ func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
 	}
 }
 
+func TestValidateRemotePaymentIdentityForMode(t *testing.T) {
+	require := require.New(t)
+
+	identity := RemotePaymentIdentity{
+		Issuer:           "https://issuer.example",
+		ClientID:         "app_1",
+		UsageSubject:     "user_1",
+		UsageSubjectType: "external_user_id",
+	}
+
+	require.NoError(validateRemotePaymentIdentityForMode(RemoteSignerUsageIdentityModeNone, RemotePaymentIdentity{}, false, nil))
+	require.Error(validateRemotePaymentIdentityForMode(RemoteSignerUsageIdentityModeTrustedHeaders, RemotePaymentIdentity{}, false, nil))
+
+	state := &RemotePaymentState{Identity: identity}
+	require.NoError(validateRemotePaymentIdentityForMode(RemoteSignerUsageIdentityModeTrustedHeaders, identity, true, state))
+
+	mismatch := identity
+	mismatch.UsageSubject = "other"
+	require.Error(validateRemotePaymentIdentityForMode(RemoteSignerUsageIdentityModeTrustedHeaders, mismatch, true, state))
+}
+
+func TestRemotePaymentIdentityFromRequest(t *testing.T) {
+	bodyIdentity := RemotePaymentIdentity{
+		Issuer:           "https://issuer.example",
+		ClientID:         "app_body",
+		UsageSubject:     "user_body",
+		UsageSubjectType: "external_user_id",
+	}
+	headerIdentity := RemotePaymentIdentity{
+		Issuer:           "https://dmz.example",
+		ClientID:         "app_header",
+		UsageSubject:     "user_header",
+		UsageSubjectType: "external_user_id",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/generate-live-payment", nil)
+	require.Equal(t, bodyIdentity, remotePaymentIdentityFromRequest(req, RemotePaymentRequest{Identity: bodyIdentity}))
+
+	req.Header.Set("X-Livepeer-Usage-Issuer", headerIdentity.Issuer)
+	req.Header.Set("X-Livepeer-Client-ID", headerIdentity.ClientID)
+	req.Header.Set("X-Livepeer-Usage-Subject", headerIdentity.UsageSubject)
+	req.Header.Set("X-Livepeer-Usage-Subject-Type", headerIdentity.UsageSubjectType)
+	require.Equal(t, headerIdentity, remotePaymentIdentityFromRequest(req, RemotePaymentRequest{Identity: bodyIdentity}))
+	require.True(t, headerIdentity.valid())
+	require.True(t, headerIdentity.equal(headerIdentity))
+}
+
 func TestGenerateLivePayment_StateValidationErrors(t *testing.T) {
 	require := require.New(t)
 

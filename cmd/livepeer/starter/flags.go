@@ -147,6 +147,7 @@ func NewLivepeerConfig(fs *flag.FlagSet) LivepeerConfig {
 	cfg.RemoteSignerHeaders = fs.String("remoteSignerHeaders", *cfg.RemoteSignerHeaders, "Map of headers to use for gateway remote signer requests. e.g. 'header:val,header2:val2'")
 	cfg.RemoteSignerWebhookURL = fs.String("remoteSignerWebhookUrl", *cfg.RemoteSignerWebhookURL, "Authentication webhook URL called by remote signer during GenerateLivePayment")
 	cfg.RemoteSignerWebhookHeaders = fs.String("remoteSignerWebhookHeaders", *cfg.RemoteSignerWebhookHeaders, "Map of headers to use for remote signer webhook requests. e.g. 'header:val,header2:val2'")
+	cfg.RemoteSignerUsageIdentityMode = fs.String("remoteSignerUsageIdentityMode", *cfg.RemoteSignerUsageIdentityMode, "Remote signer usage identity mode: none, trusted_headers, or oidc")
 	cfg.RemoteDiscovery = fs.Bool("remoteDiscovery", *cfg.RemoteDiscovery, "Enable orchestrator discovery on remote signers")
 
 	// Gateway metrics

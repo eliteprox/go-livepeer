@@ -35,6 +35,11 @@ const RefreshSessionOrchestratorURLHeader = "Livepeer-Orchestrator-URL"
 const RemoteType_LiveVideoToVideo = "lv2v"
 const PipelineLiveVideoToVideo = "live-video-to-video"
 
+const (
+	RemoteSignerUsageIdentityModeNone           = "none"
+	RemoteSignerUsageIdentityModeTrustedHeaders = "trusted_headers"
+)
+
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
 func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Request) {
 	ctx := clog.AddVal(r.Context(), "request_id", string(core.RandomManifestID()))
@@ -218,6 +223,14 @@ type RemotePaymentState struct {
 	InitialPricePerUnit  int64
 	InitialPixelsPerUnit int64
 	SequenceNumber       uint64
+	Identity             RemotePaymentIdentity `json:"identity,omitempty"`
+}
+
+type RemotePaymentIdentity struct {
+	Issuer           string `json:"issuer,omitempty"`
+	ClientID         string `json:"client_id,omitempty"`
+	UsageSubject     string `json:"usage_subject,omitempty"`
+	UsageSubjectType string `json:"usage_subject_type,omitempty"`
 }
 
 type RemotePaymentStateSig struct {
@@ -245,6 +258,9 @@ type RemotePaymentRequest struct {
 
 	// Capabilities to include in the ticket. Optional; may be set for the lv2v job type.
 	Capabilities []byte `json:"capabilities"`
+
+	// Optional accounting identity. Prefer trusted headers from the Apache signer DMZ.
+	Identity RemotePaymentIdentity `json:"identity,omitempty"`
 }
 
 // Returned by the remote signer and includes a new payment plus updated state.
@@ -257,6 +273,74 @@ type RemotePaymentResponse struct {
 type generateLivePaymentWebhookBody struct {
 	Headers map[string][]string `json:"headers"`
 	State   *RemotePaymentState `json:"state,omitempty"`
+}
+
+func remotePaymentIdentityFromRequest(r *http.Request, req RemotePaymentRequest) RemotePaymentIdentity {
+	identity := RemotePaymentIdentity{
+		Issuer:           strings.TrimSpace(r.Header.Get("X-Livepeer-Usage-Issuer")),
+		ClientID:         strings.TrimSpace(r.Header.Get("X-Livepeer-Client-ID")),
+		UsageSubject:     strings.TrimSpace(r.Header.Get("X-Livepeer-Usage-Subject")),
+		UsageSubjectType: strings.TrimSpace(r.Header.Get("X-Livepeer-Usage-Subject-Type")),
+	}
+	if !identity.empty() {
+		return identity
+	}
+	return RemotePaymentIdentity{
+		Issuer:           strings.TrimSpace(req.Identity.Issuer),
+		ClientID:         strings.TrimSpace(req.Identity.ClientID),
+		UsageSubject:     strings.TrimSpace(req.Identity.UsageSubject),
+		UsageSubjectType: strings.TrimSpace(req.Identity.UsageSubjectType),
+	}
+}
+
+func (identity RemotePaymentIdentity) empty() bool {
+	return identity.Issuer == "" &&
+		identity.ClientID == "" &&
+		identity.UsageSubject == "" &&
+		identity.UsageSubjectType == ""
+}
+
+func (identity RemotePaymentIdentity) valid() bool {
+	return identity.Issuer != "" &&
+		identity.ClientID != "" &&
+		identity.UsageSubject != "" &&
+		identity.UsageSubjectType != ""
+}
+
+func (identity RemotePaymentIdentity) equal(other RemotePaymentIdentity) bool {
+	return identity.Issuer == other.Issuer &&
+		identity.ClientID == other.ClientID &&
+		identity.UsageSubject == other.UsageSubject &&
+		identity.UsageSubjectType == other.UsageSubjectType
+}
+
+func (ls *LivepeerServer) remoteSignerUsageIdentityMode() string {
+	if ls == nil || ls.LivepeerNode == nil {
+		return RemoteSignerUsageIdentityModeNone
+	}
+	mode := strings.TrimSpace(ls.LivepeerNode.RemoteSignerUsageIdentityMode)
+	if mode == "" {
+		return RemoteSignerUsageIdentityModeNone
+	}
+	return mode
+}
+
+func validateRemotePaymentIdentityForMode(
+	mode string,
+	requestIdentity RemotePaymentIdentity,
+	hasState bool,
+	state *RemotePaymentState,
+) error {
+	if mode != RemoteSignerUsageIdentityModeTrustedHeaders {
+		return nil
+	}
+	if !requestIdentity.valid() {
+		return fmt.Errorf("missing remote payment identity")
+	}
+	if hasState && !state.Identity.empty() && !state.Identity.equal(requestIdentity) {
+		return fmt.Errorf("remote payment identity mismatch")
+	}
+	return nil
 }
 
 type authResponse struct {
@@ -397,6 +481,14 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	}
 
 	orchAddr := ethcommon.BytesToAddress(oInfo.Address)
+	requestIdentity := remotePaymentIdentityFromRequest(r, req)
+	if !requestIdentity.empty() && !requestIdentity.valid() {
+		err := fmt.Errorf("incomplete remote payment identity")
+		respondJsonError(ctx, w, err, http.StatusBadRequest)
+		return
+	}
+
+	identityMode := ls.remoteSignerUsageIdentityMode()
 
 	// Load or initialize state
 	var (
@@ -421,13 +513,22 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			respondJsonError(ctx, w, err, http.StatusBadRequest)
 			return
 		}
+		if err := validateRemotePaymentIdentityForMode(identityMode, requestIdentity, true, state); err != nil {
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
 		state.SequenceNumber++
 	} else {
+		if err := validateRemotePaymentIdentityForMode(identityMode, requestIdentity, false, nil); err != nil {
+			respondJsonError(ctx, w, err, http.StatusBadRequest)
+			return
+		}
 		state = &RemotePaymentState{
 			StateID:              string(core.RandomManifestID()),
 			OrchestratorAddress:  orchAddr,
 			InitialPricePerUnit:  priceInfo.PricePerUnit,
 			InitialPixelsPerUnit: priceInfo.PixelsPerUnit,
+			Identity:             requestIdentity,
 		}
 	}
 
@@ -687,6 +788,10 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			"cost_per_pixel":     orchPrice.FloatString(10),
 			"sequence_number":    state.SequenceNumber,
 			"num_tickets":        balUpdate.NumTickets,
+			"issuer":             state.Identity.Issuer,
+			"client_id":          state.Identity.ClientID,
+			"usage_subject":      state.Identity.UsageSubject,
+			"usage_subject_type": state.Identity.UsageSubjectType,
 		})
 	}
 
