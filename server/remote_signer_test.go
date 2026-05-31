@@ -1629,3 +1629,60 @@ func TestGetOrchInfoSig_SendsConfiguredHeaders(t *testing.T) {
 	require.Equal([]byte{0x12, 0x34}, []byte(resp.Address))
 	require.Equal([]byte{0xab, 0xcd}, []byte(resp.Signature))
 }
+
+func TestGenerateLivePayment_ReturnsUsageWithTrustedHeadersIdentity(t *testing.T) {
+	require := require.New(t)
+
+	prevPriceFeedWatcher := core.PriceFeedWatcher
+	core.PriceFeedWatcher = stubPriceFeedWatcher{
+		price: eth.PriceData{
+			RoundID:   7,
+			Price:     big.NewRat(2000, 1),
+			UpdatedAt: time.Unix(1_700_000_000, 0),
+		},
+	}
+	t.Cleanup(func() { core.PriceFeedWatcher = prevPriceFeedWatcher })
+
+	ethClient := newTestEthClient(t)
+	node, _ := core.NewLivepeerNode(ethClient, "", nil)
+	node.Balances = core.NewAddressBalances(1 * time.Minute)
+	node.Sender = newMockSender(mockSenderConfig{ev: big.NewRat(35, 1)})
+	node.RemoteSignerUsageIdentityMode = RemoteSignerUsageIdentityModeTrustedHeaders
+	ls := &LivepeerServer{LivepeerNode: node}
+
+	oInfo := &net.OrchestratorInfo{
+		Address:    ethClient.addr.Bytes(),
+		PriceInfo:  &net.PriceInfo{PricePerUnit: 1, PixelsPerUnit: 1},
+		TicketParams: &net.TicketParams{Recipient: pm.RandAddress().Bytes()},
+		AuthToken:  stubAuthToken,
+	}
+	orchBlob, err := proto.Marshal(oInfo)
+	require.NoError(err)
+
+	reqPayload := RemotePaymentRequest{
+		Orchestrator: orchBlob,
+		InPixels:     1_000_000_000_000_000, // 1e15 wei fee at 1 wei/pixel => $2 at $2000/ETH
+		Identity: RemotePaymentIdentity{
+			Issuer:           "pymthouse",
+			ClientID:         "app-client-1",
+			UsageSubject:     "user-ext-1",
+			UsageSubjectType: "external_user_id",
+		},
+	}
+	reqBody, err := json.Marshal(reqPayload)
+	require.NoError(err)
+
+	req := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(reqBody))
+	rr := httptest.NewRecorder()
+	ls.GenerateLivePayment(rr, req)
+	require.Equal(http.StatusOK, rr.Code)
+
+	var paymentResp RemotePaymentResponse
+	require.NoError(json.Unmarshal(rr.Body.Bytes(), &paymentResp))
+	require.NotNil(paymentResp.Usage)
+	require.Equal("2000000", paymentResp.Usage.ComputedFeeUsdMicros)
+	require.Equal("2000.00000000", paymentResp.Usage.EthUsdPrice)
+	require.Equal(int64(7), paymentResp.Usage.EthUsdRoundID)
+	require.NotEmpty(paymentResp.Usage.ComputedFeeWei)
+	require.NotEmpty(paymentResp.Usage.RequestID)
+}

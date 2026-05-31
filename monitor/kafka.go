@@ -149,6 +149,14 @@ func (p *KafkaProducer) sendBatch(eventsBatch []kafka.Message) {
 	}
 }
 
+func KafkaEnabled() bool {
+	return kafkaProducer != nil
+}
+
+func EmitCreateSignedTicketEvent(data map[string]interface{}) {
+	SendQueueEventAsync("create_signed_ticket", data)
+}
+
 func SendQueueEventAsync(eventType string, data interface{}) {
 	if kafkaProducer == nil {
 		return

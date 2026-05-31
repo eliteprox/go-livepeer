@@ -263,11 +263,30 @@ type RemotePaymentRequest struct {
 	Identity RemotePaymentIdentity `json:"identity,omitempty"`
 }
 
+// RemotePaymentUsage is an authoritative billing snapshot returned synchronously
+// with each signed payment. pymthouse strips this block before forwarding to gateways.
+type RemotePaymentUsage struct {
+	RequestID            string `json:"request_id,omitempty"`
+	ComputedFeeWei       string `json:"computed_fee_wei,omitempty"`
+	ComputedFeeUsdMicros string `json:"computed_fee_usd_micros,omitempty"`
+	EthUsdPrice          string `json:"eth_usd_price,omitempty"`
+	EthUsdRoundID        int64  `json:"eth_usd_round_id,omitempty"`
+	EthUsdUpdatedAt      string `json:"eth_usd_updated_at,omitempty"`
+	Pixels               string `json:"pixels,omitempty"`
+	BillableSecs         string `json:"billable_secs,omitempty"`
+	SessionBalance       string `json:"session_balance,omitempty"`
+	SequenceNumber       int64  `json:"sequence_number,omitempty"`
+	NumTickets           int64  `json:"num_tickets,omitempty"`
+	Pipeline             string `json:"pipeline,omitempty"`
+	ModelID              string `json:"model_id,omitempty"`
+}
+
 // Returned by the remote signer and includes a new payment plus updated state.
 type RemotePaymentResponse struct {
 	Payment  string                `json:"payment"`
 	SegCreds string                `json:"segCreds,omitempty"`
 	State    RemotePaymentStateSig `json:"state"`
+	Usage    *RemotePaymentUsage   `json:"usage,omitempty"`
 }
 
 type generateLivePaymentWebhookBody struct {
@@ -758,20 +777,30 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 
 	clog.Info(ctx, "Signed", "numTickets", balUpdate.NumTickets, "nonce", state.SenderNonce, "fee", fee.FloatString(0), "sessionId", oInfo.AuthToken.SessionId, "pmSessionId", sess.PMSessionID, "oldBalance", oldBal.FloatString(0), "newBalance", newBal.FloatString(0))
 
-	if monitor.Enabled {
+	pipelineModel := pipelineModelFromCapabilities(req.Capabilities, req.Type)
+	usdSnapshot := computeFeeUsdSnapshot(fee)
+	paymentUsage := buildRemotePaymentUsage(
+		requestID,
+		fee,
+		pixels,
+		billableSecs,
+		newBal,
+		int64(state.SequenceNumber),
+		int64(balUpdate.NumTickets),
+		pipelineModel,
+	)
+
+	if monitor.Enabled || monitor.KafkaEnabled() {
 		sessionStatus := "continuing"
 		if state.SequenceNumber == 0 {
 			sessionStatus = "new"
 		}
-		pipeline := ""
-		if req.Type == RemoteType_LiveVideoToVideo {
-			pipeline = PipelineLiveVideoToVideo
-		}
-		// NB: This could could drop events if tha Kafka queue is full!
-		monitor.SendQueueEventAsync("create_signed_ticket", map[string]interface{}{
+		// NB: Events may be dropped if the Kafka queue is full.
+		eventData := map[string]interface{}{
 			"session_id":         state.StateID,
 			"session_status":     sessionStatus,
-			"pipeline":           pipeline,
+			"pipeline":           pipelineModel.Pipeline,
+			"model_id":           pipelineModel.ModelID,
 			"request_id":         requestID,
 			"orch_address":       orchAddr.Hex(),
 			"orch_url":           oInfo.Transcoder,
@@ -792,7 +821,14 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			"client_id":          state.Identity.ClientID,
 			"usage_subject":      state.Identity.UsageSubject,
 			"usage_subject_type": state.Identity.UsageSubjectType,
-		})
+		}
+		if usdSnapshot.ComputedFeeUsdMicros != "" {
+			eventData["computed_fee_usd_micros"] = usdSnapshot.ComputedFeeUsdMicros
+			eventData["eth_usd_price"] = usdSnapshot.EthUsdPrice
+			eventData["eth_usd_round_id"] = usdSnapshot.EthUsdRoundID
+			eventData["eth_usd_updated_at"] = usdSnapshot.EthUsdUpdatedAt
+		}
+		monitor.EmitCreateSignedTicketEvent(eventData)
 	}
 
 	// Return payment (tickets), creds and signed state
@@ -800,6 +836,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		Payment:  payment,
 		SegCreds: segCreds,
 		State:    RemotePaymentStateSig{State: stateBytes, Sig: stateSig},
+		Usage:    paymentUsage,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
