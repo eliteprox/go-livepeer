@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ const HTTPStatusPriceExceeded = 481
 const HTTPStatusNoTickets = 482
 const RemoteType_LiveVideoToVideo = "lv2v"
 const PipelineLiveVideoToVideo = "live-video-to-video"
+const remoteSignerAuthIDHeader = "Signer-Auth-Id"
 
 // SignOrchestratorInfo handles signing GetOrchestratorInfo requests for multiple orchestrators
 func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Request) {
@@ -81,9 +83,7 @@ func (ls *LivepeerServer) SignOrchestratorInfo(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(results)
 }
 
-// StartRemoteSignerServer starts the HTTP server for remote signer mode
-func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
-	// Register the remote signer endpoints
+func registerRemoteSignerHandlers(ls *LivepeerServer) {
 	ls.HTTPMux.Handle("POST /sign-orchestrator-info", http.HandlerFunc(ls.SignOrchestratorInfo))
 	ls.HTTPMux.Handle("POST /generate-live-payment", http.HandlerFunc(ls.GenerateLivePayment))
 	if ls.LivepeerNode.RemoteDiscovery {
@@ -96,6 +96,11 @@ func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
 			ls.GetOrchestrators(rdp, w, r)
 		}))
 	}
+}
+
+// StartRemoteSignerServer starts the HTTP server for remote signer mode
+func StartRemoteSignerServer(ls *LivepeerServer, bind string) error {
+	registerRemoteSignerHandlers(ls)
 
 	// Start the HTTP server
 	glog.Info("Starting Remote Signer server on ", bind)
@@ -156,11 +161,13 @@ type RemotePaymentState struct {
 	LastUpdate           time.Time
 	OrchestratorAddress  ethcommon.Address
 	SignerAddress        string `json:"signerAddress,omitempty"`
+	AuthExpiry           int64
 	SenderNonce          uint32
 	Balance              string
 	InitialPricePerUnit  int64
 	InitialPixelsPerUnit int64
 	SequenceNumber       uint64
+	AuthID               string
 }
 
 type RemotePaymentStateSig struct {
@@ -200,6 +207,23 @@ type RemotePaymentResponse struct {
 	State    RemotePaymentStateSig `json:"state"`
 }
 
+type generateLivePaymentWebhookBody struct {
+	Headers map[string][]string `json:"headers"`
+	State   *RemotePaymentState `json:"state,omitempty"`
+}
+
+type authResponse struct {
+	// HTTP status that GenerateLivePayment should return to the caller.
+	Status *int `json:"status,omitempty"`
+	// Optional error message when Status is non-200.
+	Reason string `json:"reason,omitempty"`
+	// Unix timestamp (seconds) until which auth is considered valid.
+	// Allows for skipping webhook callbacks until this time is exceeded.
+	Expiry int64 `json:"expiry,omitempty"`
+	// Optional opaque identifier.
+	AuthID string `json:"auth_id,omitempty"`
+}
+
 // Signs the serialized state with the remote signer's Ethereum key.
 func signState(ls *LivepeerServer, stateBytes []byte) ([]byte, error) {
 	if ls == nil || ls.LivepeerNode == nil || ls.LivepeerNode.Eth == nil {
@@ -229,6 +253,63 @@ func verifyStateSignature(ls *LivepeerServer, stateBytes []byte, sig []byte, sta
 		return fmt.Errorf("invalid state signature")
 	}
 	return nil
+}
+
+func (ls *LivepeerServer) authLivePayment(r *http.Request, state *RemotePaymentState) (int, *authResponse, error) {
+	if ls == nil || ls.LivepeerNode == nil {
+		return http.StatusOK, nil, nil
+	}
+	callbackURL := ls.LivepeerNode.RemoteSignerWebhookURL
+	callbackHeaders := ls.LivepeerNode.RemoteSignerWebhookHeaders
+	if callbackURL == nil {
+		return http.StatusOK, nil, nil
+	}
+	if state != nil && state.AuthExpiry != 0 && time.Now().Unix() <= state.AuthExpiry {
+		return http.StatusOK, nil, nil
+	}
+
+	body, err := json.Marshal(generateLivePaymentWebhookBody{Headers: r.Header, State: state})
+	if err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("failed to encode signer auth payload: %v", err)
+	}
+	webhookReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, callbackURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("failed to build signer auth request: %v", err)
+	}
+	webhookReq.Header.Set("Content-Type", "application/json")
+	for key, value := range callbackHeaders {
+		webhookReq.Header.Set(key, value)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(webhookReq)
+	if err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("failed to call remote signer webhook: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("failed to read signer auth response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// Error with webhook service or signer misconfiguration, so treat as internal
+		return http.StatusInternalServerError, nil, fmt.Errorf("signer auth error status %d", resp.StatusCode)
+	}
+
+	var webhookResp authResponse
+	if err := json.Unmarshal(respBody, &webhookResp); err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("signer auth invalid response: %v", err)
+	}
+	if webhookResp.Status == nil || *webhookResp.Status <= 0 {
+		return http.StatusInternalServerError, nil, errors.New("signer auth invalid status")
+	}
+	if *webhookResp.Status != http.StatusOK && webhookResp.Reason == "" {
+		webhookResp.Reason = fmt.Sprintf("signer auth rejected request with status %d", *webhookResp.Status)
+	}
+
+	return *webhookResp.Status, &webhookResp, errors.New(webhookResp.Reason)
 }
 
 // GenerateLivePayment handles remote generation of a payment for live streams.
@@ -549,6 +630,28 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	callbackStatus, callbackResp, callbackErr := ls.authLivePayment(r, state)
+	if callbackStatus != http.StatusOK {
+		respondJsonError(ctx, w, callbackErr, callbackStatus)
+		return
+	}
+	if callbackResp != nil {
+		state.AuthExpiry = callbackResp.Expiry
+	}
+	authID := r.Header.Get(remoteSignerAuthIDHeader)
+	if callbackResp != nil && callbackResp.AuthID != "" {
+		authID = callbackResp.AuthID
+	}
+	if authID != "" && state.AuthID != authID {
+		if state.AuthID != "" {
+			clog.Warningf(ctx, "Remote signer auth ID changed oldAuthID=%s newAuthID=%s", state.AuthID, authID)
+			respondJsonError(ctx, w, errors.New("remote signer auth ID changed"), http.StatusInternalServerError)
+			return
+		}
+		state.AuthID = authID
+	}
+	ctx = clog.AddVal(ctx, "auth_id", state.AuthID)
+
 	// Encode and sign updated state
 	stateBytes, err := json.Marshal(state)
 	if err != nil {
@@ -596,6 +699,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			"cost_per_pixel":     orchPrice.FloatString(10),
 			"sequence_number":    state.SequenceNumber,
 			"num_tickets":        balUpdate.NumTickets,
+			"auth_id":            state.AuthID,
 		})
 	}
 
@@ -612,7 +716,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 
 // Gateway helper that calls the remote signer service for the GetOrchestratorInfo signature.
 // When address is non-empty, it is passed as ?address=0x… for Turnkey multi-address signers.
-func GetOrchInfoSig(remoteSignerHost *url.URL, address string) (*OrchInfoSigResponse, error) {
+func GetOrchInfoSig(remoteSignerHost *url.URL, address string, headers map[string]string) (*OrchInfoSigResponse, error) {
 
 	u := remoteSignerHost.ResolveReference(&url.URL{Path: "/sign-orchestrator-info"})
 	if strings.TrimSpace(address) != "" {
@@ -626,8 +730,17 @@ func GetOrchInfoSig(remoteSignerHost *url.URL, address string) (*OrchInfoSigResp
 		Timeout: 30 * time.Second,
 	}
 
+	req, err := http.NewRequest(http.MethodPost, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
 	// Make the request
-	resp, err := client.Post(u.String(), "application/json", nil)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call remote signer: %w", err)
 	}
