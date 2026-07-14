@@ -1485,6 +1485,91 @@ func TestRemoteSigner_Discovery_FiltersRunnerDiscoveryPricing(t *testing.T) {
 	require.Equal("application/json", rr.Header().Get("Content-Type"))
 }
 
+func TestRemoteSigner_Discovery_IndexesOpaqueLiveRunnerApps(t *testing.T) {
+	require := require.New(t)
+
+	BroadcastCfg.SetMaxPrice(core.NewFixedPrice(big.NewRat(10, 1)))
+	defer BroadcastCfg.SetMaxPrice(nil)
+
+	node := &core.LivepeerNode{}
+	require.NoError(node.UpdateNetworkCapabilities([]*common.OrchNetworkCapabilities{
+		{
+			// No AI Models in RPC capabilities — runners alone must publish the orch.
+			OrchURI: "https://ffmpeg.example.com:8935",
+			Discovery: discoveryRaw(t, `[{
+				"address": "https://ffmpeg.example.com:8935",
+				"runners": [
+					{"url":"https://ffmpeg.example.com:8935/apps/ffmpeg/session","app":"transcode/ffmpeg","capacity":2,"price_info":{"price_per_unit":5,"pixels_per_unit":1,"unit":"WEI"}},
+					{"url":"https://ffmpeg.example.com:8935/too-expensive","app":"transcode/ffmpeg","price_info":{"price_per_unit":11,"pixels_per_unit":1,"unit":"WEI"}},
+					{"url":"https://ffmpeg.example.com:8935/usd","app":"transcode/ffmpeg","price_info":{"price_per_unit":1,"pixels_per_unit":1,"unit":"USD"}},
+					{"url":"https://ffmpeg.example.com:8935/missing-price","app":"transcode/ffmpeg"},
+					{"url":"https://ffmpeg.example.com:8935/invalid-app","app":"notanapp","price_info":{"price_per_unit":1,"pixels_per_unit":1,"unit":"WEI"}}
+				]
+			}]`),
+		},
+	}))
+
+	rdp := &remoteDiscoveryPool{
+		node:         node,
+		refreshEvery: time.Hour,
+	}
+	ls := &LivepeerServer{}
+
+	req := httptest.NewRequest(http.MethodGet, "/discover-orchestrators?caps=transcode/ffmpeg", nil)
+	rr := httptest.NewRecorder()
+	ls.GetOrchestrators(rdp, rr, req)
+
+	require.Equal(http.StatusOK, rr.Code)
+	var resp []discoveryResponse
+	require.NoError(json.NewDecoder(rr.Body).Decode(&resp))
+	require.Len(resp, 1)
+	require.Equal("https://ffmpeg.example.com:8935", resp[0].Address)
+	require.Equal([]string{"transcode/ffmpeg"}, resp[0].Capabilities)
+	require.Len(resp[0].Runners, 1)
+	require.Equal("https://ffmpeg.example.com:8935/apps/ffmpeg/session", resp[0].Runners[0].URL)
+	require.Equal("transcode/ffmpeg", resp[0].Runners[0].App)
+
+	allReq := httptest.NewRequest(http.MethodGet, "/discover-orchestrators", nil)
+	allRR := httptest.NewRecorder()
+	ls.GetOrchestrators(rdp, allRR, allReq)
+	require.Equal(http.StatusOK, allRR.Code)
+	var allResp []discoveryResponse
+	require.NoError(json.NewDecoder(allRR.Body).Decode(&allResp))
+	require.Len(allResp, 1)
+	require.Equal([]string{"transcode/ffmpeg"}, allResp[0].Capabilities)
+}
+
+func TestRemoteSigner_Discovery_OpaqueLiveRunnerAppsUseGlobalMaxPrice(t *testing.T) {
+	require := require.New(t)
+
+	BroadcastCfg.SetMaxPrice(core.NewFixedPrice(big.NewRat(1, 1)))
+	defer BroadcastCfg.SetMaxPrice(nil)
+
+	node := &core.LivepeerNode{}
+	require.NoError(node.UpdateNetworkCapabilities([]*common.OrchNetworkCapabilities{
+		{
+			OrchURI: "https://ffmpeg-expensive.example.com:8935",
+			Discovery: discoveryRaw(t, `[{
+				"address": "https://ffmpeg-expensive.example.com:8935",
+				"runners": [
+					{"url":"https://ffmpeg-expensive.example.com:8935/apps/ffmpeg/session","app":"transcode/ffmpeg","price_info":{"price_per_unit":2,"pixels_per_unit":1,"unit":"WEI"}}
+				]
+			}]`),
+		},
+	}))
+
+	rdp := &remoteDiscoveryPool{
+		node:         node,
+		refreshEvery: time.Hour,
+	}
+	ls := &LivepeerServer{}
+
+	req := httptest.NewRequest(http.MethodGet, "/discover-orchestrators?caps=transcode/ffmpeg", nil)
+	rr := httptest.NewRecorder()
+	ls.GetOrchestrators(rdp, rr, req)
+	require.Equal(http.StatusServiceUnavailable, rr.Code)
+}
+
 func discoveryRaw(t *testing.T, data string) json.RawMessage {
 	t.Helper()
 	require.True(t, json.Valid([]byte(data)))

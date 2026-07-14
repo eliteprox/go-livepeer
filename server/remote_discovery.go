@@ -300,9 +300,6 @@ func remoteDiscoveryEntries(raw json.RawMessage) []remoteDiscoveryEntry {
 }
 
 func (entry *remoteDiscoveryMergeEntry) remoteDiscoveryRunnerEligible(runner runner.LiveRunnerDiscoveryRunner, eligibleCaps map[string]bool) bool {
-	if eligibleCaps != nil && !eligibleCaps[runner.App] {
-		return false
-	}
 	if runner.PriceInfo == nil {
 		return false
 	}
@@ -321,11 +318,22 @@ func (entry *remoteDiscoveryMergeEntry) remoteDiscoveryRunnerEligible(runner run
 		return false
 	}
 
-	capability, modelID, ok := capabilityModelFromApp(runner.App)
-	if !ok {
-		return false
+	capability, modelID, known := capabilityModelFromApp(runner.App)
+	var maxPrice *big.Rat
+	if known {
+		// Known AI pipeline/model keys remain gated by Pass 1 price-eligible caps.
+		if eligibleCaps != nil && !eligibleCaps[runner.App] {
+			return false
+		}
+		maxPrice = capabilityMaxPrice(capability, modelID)
+	} else {
+		// Non-AI live-runner apps (e.g. transcode/ffmpeg) are not in CapabilityNameLookup.
+		// Index them by the opaque app string and apply global max price only.
+		if !opaqueRemoteDiscoveryApp(runner.App) {
+			return false
+		}
+		maxPrice = BroadcastCfg.MaxPrice()
 	}
-	maxPrice := capabilityMaxPrice(capability, modelID)
 	if maxPrice == nil {
 		return true
 	}
@@ -344,6 +352,11 @@ func (entry *remoteDiscoveryMergeEntry) remoteDiscoveryRunnerEligible(runner run
 		return false
 	}
 	return true
+}
+
+func opaqueRemoteDiscoveryApp(app string) bool {
+	pipeline, modelID, ok := strings.Cut(app, "/")
+	return ok && pipeline != "" && modelID != ""
 }
 
 func capabilityModelFromApp(app string) (core.Capability, string, bool) {
