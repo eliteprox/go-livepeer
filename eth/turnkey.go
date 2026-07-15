@@ -12,6 +12,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	sdk "github.com/tkhq/go-sdk"
 	"github.com/tkhq/go-sdk/pkg/api/client/signing"
@@ -291,7 +292,12 @@ func (t *TurnkeyAccountManager) SignTx(tx *types.Transaction) (*types.Transactio
 
 func (t *TurnkeyAccountManager) signTransactionRLP(tx *types.Transaction) ([]byte, error) {
 	signWith := t.activeSignWith()
-	unsignedBytes, err := tx.MarshalBinary()
+	// Turnkey's Ethereum pre-parser rejects typed-tx MarshalBinary() payloads
+	// because go-ethereum includes empty yParity/r/s. Encode the unsigned
+	// signing payload instead (type byte + RLP without signature fields).
+	// abi/bind also omits ChainID on DynamicFeeTx; local signers inject it at
+	// hash time, but Turnkey reads it from the RLP, so pass our chainID.
+	unsignedBytes, err := marshalUnsignedEthereumTx(tx, t.chainID)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +334,81 @@ func (t *TurnkeyAccountManager) signTransactionRLP(tx *types.Transaction) ([]byt
 	}
 	rlpHex = strings.TrimPrefix(strings.TrimSpace(rlpHex), "0x")
 	return hex.DecodeString(rlpHex)
+}
+
+// marshalUnsignedEthereumTx serializes a tx for Turnkey SignTransaction.
+// Typed transactions omit yParity/r/s; legacy keeps go-ethereum MarshalBinary.
+// chainIDFallback is used when the tx has no ChainID (common for abi/bind DynamicFeeTx).
+func marshalUnsignedEthereumTx(tx *types.Transaction, chainIDFallback *big.Int) ([]byte, error) {
+	chainID, err := effectiveTxChainID(tx, chainIDFallback)
+	if err != nil {
+		return nil, err
+	}
+	switch tx.Type() {
+	case types.LegacyTxType:
+		return tx.MarshalBinary()
+	case types.AccessListTxType:
+		payload, err := rlp.EncodeToBytes([]interface{}{
+			chainID,
+			tx.Nonce(),
+			tx.GasPrice(),
+			tx.Gas(),
+			tx.To(),
+			tx.Value(),
+			tx.Data(),
+			tx.AccessList(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte{types.AccessListTxType}, payload...), nil
+	case types.DynamicFeeTxType:
+		payload, err := rlp.EncodeToBytes([]interface{}{
+			chainID,
+			tx.Nonce(),
+			tx.GasTipCap(),
+			tx.GasFeeCap(),
+			tx.Gas(),
+			tx.To(),
+			tx.Value(),
+			tx.Data(),
+			tx.AccessList(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte{types.DynamicFeeTxType}, payload...), nil
+	case types.BlobTxType:
+		payload, err := rlp.EncodeToBytes([]interface{}{
+			chainID,
+			tx.Nonce(),
+			tx.GasTipCap(),
+			tx.GasFeeCap(),
+			tx.Gas(),
+			tx.To(),
+			tx.Value(),
+			tx.Data(),
+			tx.AccessList(),
+			tx.BlobGasFeeCap(),
+			tx.BlobHashes(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte{types.BlobTxType}, payload...), nil
+	default:
+		return nil, fmt.Errorf("turnkey: unsupported ethereum tx type %d", tx.Type())
+	}
+}
+
+func effectiveTxChainID(tx *types.Transaction, fallback *big.Int) (*big.Int, error) {
+	if id := tx.ChainId(); id != nil && id.Sign() != 0 {
+		return id, nil
+	}
+	if fallback != nil && fallback.Sign() != 0 {
+		return fallback, nil
+	}
+	return nil, fmt.Errorf("turnkey: missing chain id for unsigned tx type %d", tx.Type())
 }
 
 func (t *TurnkeyAccountManager) CreateTransactOpts(gasLimit uint64) (*bind.TransactOpts, error) {

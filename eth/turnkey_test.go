@@ -130,11 +130,9 @@ func TestTurnkeySignTxMatchesKeystore(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 
-	_, key, acct, dir := turnkeyTestKeyAndKeystore(t)
+	_, key, acct, _ := turnkeyTestKeyAndKeystore(t)
 	chainID := big.NewInt(777)
-	am, err := NewAccountManager(acct.Address, dir, chainID, "")
-	require.NoError(err)
-	require.NoError(am.Unlock(""))
+	signer := types.LatestSignerForChainID(chainID)
 
 	to := ethcommon.HexToAddress("0x1111111111111111111111111111111111111111")
 	tx := types.NewTx(&types.LegacyTx{
@@ -146,33 +144,87 @@ func TestTurnkeySignTxMatchesKeystore(t *testing.T) {
 		Data:     nil,
 	})
 
-	sigKs, err := am.SignTx(tx)
+	sigKs, err := types.SignTx(tx, signer, key)
 	require.NoError(err)
 	ksRaw, err := sigKs.MarshalBinary()
 	require.NoError(err)
 
 	tk := NewTurnkeyAccountManager(nil, "test-org", chainID, acct.Address)
-	tk.signTransactionFn = func(_, _, unsignedHex string) (string, error) {
-		raw, err := hex.DecodeString(unsignedHex)
-		require.NoError(err)
-		var utx types.Transaction
-		require.NoError(utx.UnmarshalBinary(raw))
-		signer := types.LatestSignerForChainID(chainID)
-		h := signer.Hash(&utx)
-		sig, err := crypto.Sign(h.Bytes(), key)
-		require.NoError(err)
-		stx, err := utx.WithSignature(signer, sig)
-		require.NoError(err)
-		out, err := stx.MarshalBinary()
-		require.NoError(err)
-		return hex.EncodeToString(out), nil
-	}
+	tk.signTransactionFn = mockTurnkeyTxSigner(t, key, chainID, tx)
 
 	sigTk, err := tk.SignTx(tx)
 	require.NoError(err)
 	tkRaw, err := sigTk.MarshalBinary()
 	require.NoError(err)
 	assert.Equal(ksRaw, tkRaw)
+}
+
+func TestTurnkeySignTxMatchesKeystore_DynamicFee(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+
+	_, key, acct, _ := turnkeyTestKeyAndKeystore(t)
+	chainID := big.NewInt(777)
+	signer := types.LatestSignerForChainID(chainID)
+
+	to := ethcommon.HexToAddress("0x1111111111111111111111111111111111111111")
+	// abi/bind omits ChainID on DynamicFeeTx; local signers inject it at hash time.
+	tx := types.NewTx(&types.DynamicFeeTx{
+		Nonce:     3,
+		GasTipCap: big.NewInt(1),
+		GasFeeCap: big.NewInt(5),
+		Gas:       21000,
+		To:        &to,
+		Value:     big.NewInt(1000),
+		Data:      nil,
+	})
+	require.True(tx.ChainId() == nil || tx.ChainId().Sign() == 0)
+
+	sigKs, err := types.SignTx(tx, signer, key)
+	require.NoError(err)
+	ksRaw, err := sigKs.MarshalBinary()
+	require.NoError(err)
+
+	unsigned, err := marshalUnsignedEthereumTx(tx, chainID)
+	require.NoError(err)
+	mb, err := tx.MarshalBinary()
+	require.NoError(err)
+	assert.NotEqual(hex.EncodeToString(mb), hex.EncodeToString(unsigned))
+	assert.Equal(byte(types.DynamicFeeTxType), unsigned[0])
+	// Encoded chain id must be the fallback (777 = 0x0309), not empty/0.
+	assert.Contains(hex.EncodeToString(unsigned), "820309")
+
+	tk := NewTurnkeyAccountManager(nil, "test-org", chainID, acct.Address)
+	tk.signTransactionFn = mockTurnkeyTxSigner(t, key, chainID, tx)
+
+	sigTk, err := tk.SignTx(tx)
+	require.NoError(err)
+	tkRaw, err := sigTk.MarshalBinary()
+	require.NoError(err)
+	assert.Equal(ksRaw, tkRaw)
+}
+
+func mockTurnkeyTxSigner(
+	t *testing.T,
+	key *ecdsa.PrivateKey,
+	chainID *big.Int,
+	tx *types.Transaction,
+) func(orgID, signWith, unsignedTxHex string) (string, error) {
+	t.Helper()
+	return func(_, _, unsignedHex string) (string, error) {
+		want, err := marshalUnsignedEthereumTx(tx, chainID)
+		require.NoError(t, err)
+		require.Equal(t, hex.EncodeToString(want), unsignedHex)
+
+		signer := types.LatestSignerForChainID(chainID)
+		sig, err := crypto.Sign(signer.Hash(tx).Bytes(), key)
+		require.NoError(t, err)
+		stx, err := tx.WithSignature(signer, sig)
+		require.NoError(t, err)
+		out, err := stx.MarshalBinary()
+		require.NoError(t, err)
+		return hex.EncodeToString(out), nil
+	}
 }
 
 func TestTurnkeyAssembleRSV_LowSAndV27(t *testing.T) {
