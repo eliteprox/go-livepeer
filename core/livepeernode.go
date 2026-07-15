@@ -149,13 +149,23 @@ type LivepeerNode struct {
 	ExtraNodes int
 
 	// Gateway fields for remote signers
-	RemoteSignerUrl            *url.URL          // URL of remote signer service to use (gateway only)
-	RemoteSignerHeaders        map[string]string // Headers to use for gateway remote signer requests
+	RemoteSignerUrl     *url.URL          // URL of remote signer service to use (gateway only)
+	RemoteSignerHeaders map[string]string // Headers to use for gateway remote signer requests
+	RemoteEthAddr       ethcommon.Address // eth address of the remote signer
+	// GatewayRemoteSignerAddress optionally pins the gateway to a specific remote signer ETH identity (Turnkey multi-address).
+	GatewayRemoteSignerAddress ethcommon.Address
+	InfoSig                    []byte // sig over eth address for the OrchestratorInfo request
+	RemoteDiscovery            bool   // expose remote discovery endpoint when enabled
+
+	// Turnkey (remote signer only): org id, address book, and the concrete account manager when using Turnkey signing.
+	TurnkeyMode    bool
+	TurnkeyOrgID   string
+	TurnkeyAccount *eth.TurnkeyAccountManager
+	turnkeyMu      sync.RWMutex
+	turnkeyAddrs   map[ethcommon.Address]struct{}
+
 	RemoteSignerWebhookURL     *url.URL          // Authentication webhook URL called by remote signer during GenerateLivePayment
 	RemoteSignerWebhookHeaders map[string]string // Headers to use for remote signer webhook requests
-	RemoteEthAddr              ethcommon.Address // eth address of the remote signer
-	InfoSig                    []byte            // sig over eth address for the OrchestratorInfo request
-	RemoteDiscovery            bool              // expose remote discovery endpoint when enabled
 
 	// Thread safety for config fields
 	mu                  sync.RWMutex
@@ -398,4 +408,45 @@ func (n *LivepeerNode) GetPriceForJob(senderEthAddress string, extCapability str
 	}
 
 	return jobPrice
+}
+
+// ReplaceTurnkeyAddressBook sets the set of Ethereum addresses this remote signer may use for Turnkey signing.
+func (n *LivepeerNode) ReplaceTurnkeyAddressBook(addrs []ethcommon.Address) {
+	if n == nil {
+		return
+	}
+	n.turnkeyMu.Lock()
+	defer n.turnkeyMu.Unlock()
+	n.turnkeyAddrs = make(map[ethcommon.Address]struct{})
+	for _, a := range addrs {
+		n.turnkeyAddrs[a] = struct{}{}
+	}
+}
+
+// TurnkeySigningAddressAllowed returns true if addr is in the Turnkey address book (or if the book is unset / Turnkey off).
+func (n *LivepeerNode) TurnkeySigningAddressAllowed(addr ethcommon.Address) bool {
+	if n == nil || !n.TurnkeyMode || n.TurnkeyAccount == nil {
+		return true
+	}
+	n.turnkeyMu.RLock()
+	defer n.turnkeyMu.RUnlock()
+	if len(n.turnkeyAddrs) == 0 {
+		return true
+	}
+	_, ok := n.turnkeyAddrs[addr]
+	return ok
+}
+
+// TurnkeyAddressList returns a snapshot of known Turnkey Ethereum addresses (for status / CLI).
+func (n *LivepeerNode) TurnkeyAddressList() []ethcommon.Address {
+	if n == nil {
+		return nil
+	}
+	n.turnkeyMu.RLock()
+	defer n.turnkeyMu.RUnlock()
+	out := make([]ethcommon.Address, 0, len(n.turnkeyAddrs))
+	for a := range n.turnkeyAddrs {
+		out = append(out, a)
+	}
+	return out
 }
