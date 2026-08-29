@@ -134,6 +134,9 @@ type LivepeerServer struct {
 	outSegmentTimeout    time.Duration
 
 	byocSrv *byoc.BYOCGatewayServer
+
+	// Optional OpenMeter ingest override used by tests. Production uses node config.
+	llmUsageIngester LLMUsageIngester
 }
 
 func (s *LivepeerServer) SetContextFromUnitTest(c context.Context) {

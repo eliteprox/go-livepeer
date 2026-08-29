@@ -151,6 +151,9 @@ func NewLivepeerConfig(fs *flag.FlagSet) LivepeerConfig {
 	cfg.RemoteSignerWebhookHeaders = fs.String("remoteSignerWebhookHeaders", *cfg.RemoteSignerWebhookHeaders, "Map of headers to use for remote signer webhook requests. e.g. 'header:val,header2:val2'")
 	cfg.RemoteSignerAllowNoAuth = fs.Bool("remoteSignerAllowNoAuth", *cfg.RemoteSignerAllowNoAuth, "Allow an unauthenticated remote signer on a public -httpAddr (no webhook). UNSAFE: signs payments from this node's deposit for any reachable caller; restrict access externally (proxy/private network).")
 	cfg.RemoteDiscovery = fs.Bool("remoteDiscovery", *cfg.RemoteDiscovery, "Enable orchestrator discovery on remote signers")
+	cfg.OpenMeterIngestURL = fs.String("openMeterIngestUrl", *cfg.OpenMeterIngestURL, "Konnect/OpenMeter v3 events ingest URL (e.g. https://us.api.konghq.com/v3/openmeter/events). Remote signer only.")
+	cfg.OpenMeterAPIToken = fs.String("openMeterAPIToken", *cfg.OpenMeterAPIToken, "Bearer token for OpenMeter ingest. Remote signer only.")
+	cfg.OpenMeterEventSource = fs.String("openMeterEventSource", *cfg.OpenMeterEventSource, "CloudEvents source attribute for LLM usage events")
 
 	// Gateway metrics
 	cfg.KafkaBootstrapServers = fs.String("kafkaBootstrapServers", *cfg.KafkaBootstrapServers, "URL of Kafka Bootstrap Servers")

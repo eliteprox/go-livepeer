@@ -91,6 +91,9 @@ type aiRequestParams struct {
 	sessManager *AISessionManager
 
 	liveParams *liveRequestParams
+
+	// Identity headers forwarded only to the remote signer usage endpoint.
+	llmSignerHeaders map[string]string
 }
 
 // For live video pipelines
@@ -1195,19 +1198,20 @@ func submitLLM(ctx context.Context, params aiRequestParams, sess *AISession, req
 	}
 
 	if req.Stream != nil && *req.Stream {
-		return handleSSEStream(ctx, resp.Body, sess, req, start)
+		return handleSSEStream(ctx, resp.Body, sess, req, start, params)
 	}
 
-	return handleNonStreamingResponse(ctx, resp.Body, sess, req, start)
+	return handleNonStreamingResponse(ctx, resp.Body, sess, req, start, params)
 }
 
-func handleSSEStream(ctx context.Context, body io.ReadCloser, sess *AISession, req worker.GenLLMJSONRequestBody, start time.Time) (chan *worker.LLMResponse, error) {
+func handleSSEStream(ctx context.Context, body io.ReadCloser, sess *AISession, req worker.GenLLMJSONRequestBody, start time.Time, params aiRequestParams) (chan *worker.LLMResponse, error) {
 	streamChan := make(chan *worker.LLMResponse, 100)
 	go func() {
 		defer close(streamChan)
 		defer body.Close()
 		scanner := bufio.NewScanner(body)
 		var totalTokens worker.LLMTokenUsage
+		gotUsage := false
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.HasPrefix(line, "data: ") {
@@ -1219,6 +1223,7 @@ func handleSSEStream(ctx context.Context, body io.ReadCloser, sess *AISession, r
 					continue
 				}
 				totalTokens = chunk.Usage
+				gotUsage = true
 				streamChan <- &chunk
 				//check if stream is finished
 				if chunk.Choices[0].FinishReason != nil && *chunk.Choices[0].FinishReason != "" {
@@ -1240,12 +1245,13 @@ func handleSSEStream(ctx context.Context, body io.ReadCloser, sess *AISession, r
 			}
 			monitor.AIRequestFinished(ctx, "llm", *req.Model, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 		}
+		reportWorkerLLMUsage(ctx, params, req, totalTokens, gotUsage)
 	}()
 
 	return streamChan, nil
 }
 
-func handleNonStreamingResponse(ctx context.Context, body io.ReadCloser, sess *AISession, req worker.GenLLMJSONRequestBody, start time.Time) (*worker.LLMResponse, error) {
+func handleNonStreamingResponse(ctx context.Context, body io.ReadCloser, sess *AISession, req worker.GenLLMJSONRequestBody, start time.Time, params aiRequestParams) (*worker.LLMResponse, error) {
 	data, err := io.ReadAll(body)
 	defer body.Close()
 	if err != nil {
@@ -1274,6 +1280,7 @@ func handleNonStreamingResponse(ctx context.Context, body io.ReadCloser, sess *A
 		}
 		monitor.AIRequestFinished(ctx, "llm", *req.Model, monitor.AIJobInfo{LatencyScore: sess.LatencyScore, PricePerUnit: pricePerAIUnit}, sess.OrchestratorInfo)
 	}
+	reportWorkerLLMUsage(ctx, params, req, res.Usage, true)
 
 	return &res, nil
 }

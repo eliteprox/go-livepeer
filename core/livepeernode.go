@@ -160,6 +160,9 @@ type LivepeerNode struct {
 	RemoteEthAddr              ethcommon.Address // eth address of the remote signer
 	InfoSig                    []byte            // sig over eth address for the OrchestratorInfo request
 	RemoteDiscovery            bool              // expose remote discovery endpoint when enabled
+	OpenMeterIngestURL         *url.URL          // Konnect / OpenMeter v3 events ingest URL
+	OpenMeterAPIToken          string            // Bearer token for OpenMeter ingest (never logged)
+	OpenMeterEventSource       string            // CloudEvents source attribute
 
 	// Thread safety for config fields
 	mu                  sync.RWMutex

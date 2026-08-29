@@ -182,6 +182,9 @@ type LivepeerConfig struct {
 	RemoteSignerWebhookHeaders *string
 	RemoteSignerAllowNoAuth    *bool
 	RemoteDiscovery            *bool
+	OpenMeterIngestURL         *string
+	OpenMeterAPIToken          *string
+	OpenMeterEventSource       *string
 	AIRunnerImage              *string
 	AIRunnerImageOverrides     *string
 	AIVerboseLogs              *bool
@@ -330,6 +333,9 @@ func DefaultLivepeerConfig() LivepeerConfig {
 	defaultRemoteSignerWebhookHeaders := ""
 	defaultRemoteSignerAllowNoAuth := false
 	defaultRemoteDiscovery := false
+	defaultOpenMeterIngestURL := ""
+	defaultOpenMeterAPIToken := ""
+	defaultOpenMeterEventSource := "livepeer-remote-signer"
 
 	// Gateway logs
 	defaultKafkaBootstrapServers := ""
@@ -464,6 +470,9 @@ func DefaultLivepeerConfig() LivepeerConfig {
 		RemoteSignerWebhookHeaders: &defaultRemoteSignerWebhookHeaders,
 		RemoteSignerAllowNoAuth:    &defaultRemoteSignerAllowNoAuth,
 		RemoteDiscovery:            &defaultRemoteDiscovery,
+		OpenMeterIngestURL:         &defaultOpenMeterIngestURL,
+		OpenMeterAPIToken:          &defaultOpenMeterAPIToken,
+		OpenMeterEventSource:       &defaultOpenMeterEventSource,
 
 		// Gateway logs
 		KafkaBootstrapServers: &defaultKafkaBootstrapServers,
@@ -491,6 +500,7 @@ func (cfg LivepeerConfig) PrintConfig(w io.Writer) {
 		"FVfailGsKey":                true,
 		"RemoteSignerHeaders":        true,
 		"RemoteSignerWebhookHeaders": true,
+		"OpenMeterAPIToken":          true,
 	}
 
 	for i := 0; i < cfgType.NumField(); i++ {
@@ -1638,6 +1648,22 @@ func StartLivepeer(ctx context.Context, cfg LivepeerConfig) {
 		if cfg.RemoteSignerWebhookHeaders != nil {
 			n.RemoteSignerWebhookHeaders = parseHeaderMap(*cfg.RemoteSignerWebhookHeaders)
 		}
+	}
+	if cfg.OpenMeterIngestURL != nil && *cfg.OpenMeterIngestURL != "" {
+		parsedURL, err := validateURL(*cfg.OpenMeterIngestURL)
+		if err != nil {
+			glog.Exit("Error setting OpenMeter ingest URL ", err)
+		}
+		n.OpenMeterIngestURL = parsedURL
+		if cfg.OpenMeterAPIToken != nil {
+			n.OpenMeterAPIToken = *cfg.OpenMeterAPIToken
+		}
+		if cfg.OpenMeterEventSource != nil && *cfg.OpenMeterEventSource != "" {
+			n.OpenMeterEventSource = *cfg.OpenMeterEventSource
+		} else {
+			n.OpenMeterEventSource = "livepeer-remote-signer"
+		}
+		glog.Info("Using OpenMeter ingest URL ", parsedURL.Redacted())
 	}
 
 	httpIngest := true

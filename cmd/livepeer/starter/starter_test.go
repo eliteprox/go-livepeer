@@ -419,6 +419,7 @@ func TestPrintConfigRedaction(t *testing.T) {
 	testServiceAddr := "127.0.0.1:8936"
 	testRemoteSignerHeaders := "Authorization:Bearer gateway-token"
 	testRemoteSignerWebhookHeaders := "Authorization:Bearer webhook-token,X-API-Key:secret"
+	testOpenMeterToken := "spat_secret_token"
 
 	cfg.EthPassword = &testPassword
 	cfg.LiveAIAuthApiKey = &testApiKey
@@ -426,6 +427,7 @@ func TestPrintConfigRedaction(t *testing.T) {
 	cfg.ServiceAddr = &testServiceAddr
 	cfg.RemoteSignerHeaders = &testRemoteSignerHeaders
 	cfg.RemoteSignerWebhookHeaders = &testRemoteSignerWebhookHeaders
+	cfg.OpenMeterAPIToken = &testOpenMeterToken
 
 	// Capture the output
 	var buf []byte
@@ -440,6 +442,7 @@ func TestPrintConfigRedaction(t *testing.T) {
 	assert.NotContains(output, testOrchSecret, "OrchSecret should be redacted")
 	assert.NotContains(output, testRemoteSignerHeaders, "RemoteSignerHeaders should be redacted")
 	assert.NotContains(output, testRemoteSignerWebhookHeaders, "RemoteSignerWebhookHeaders should be redacted")
+	assert.NotContains(output, testOpenMeterToken, "OpenMeterAPIToken should be redacted")
 	assert.Contains(output, "***", "Should contain redacted placeholder")
 
 	// Verify non-sensitive values are still shown
@@ -472,6 +475,22 @@ func TestNewLivepeerConfig_RemoteSignerWebhookFlags(t *testing.T) {
 	require.Equal("Authorization:Bearer gateway-token", *cfg.RemoteSignerHeaders)
 	require.Equal("https://example.com/webhook", *cfg.RemoteSignerWebhookURL)
 	require.Equal("Authorization:Bearer abc,X-API-Key:secret", *cfg.RemoteSignerWebhookHeaders)
+}
+
+func TestNewLivepeerConfig_OpenMeterFlags(t *testing.T) {
+	require := require.New(t)
+
+	fs := flag.NewFlagSet("livepeer-test", flag.ContinueOnError)
+	cfg := NewLivepeerConfig(fs)
+	err := fs.Parse([]string{
+		"-openMeterIngestUrl", "https://us.api.konghq.com/v3/openmeter/events",
+		"-openMeterAPIToken", "spat_secret",
+		"-openMeterEventSource", "livepeer-remote-signer",
+	})
+	require.NoError(err)
+	require.Equal("https://us.api.konghq.com/v3/openmeter/events", *cfg.OpenMeterIngestURL)
+	require.Equal("spat_secret", *cfg.OpenMeterAPIToken)
+	require.Equal("livepeer-remote-signer", *cfg.OpenMeterEventSource)
 }
 
 func TestNewLivepeerConfig_EnableCliTxRoutesFlag(t *testing.T) {

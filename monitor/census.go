@@ -161,6 +161,8 @@ type (
 		mHTTPClientTimeout1           *stats.Int64Measure
 		mHTTPClientTimeout2           *stats.Int64Measure
 		mKafkaEventSendError          *stats.Int64Measure
+		mLLMUsageIngestError          *stats.Int64Measure
+		mLLMUsageIngested             *stats.Int64Measure
 		mRealtimeRatio                *stats.Float64Measure
 		mRealtime3x                   *stats.Int64Measure
 		mRealtime2x                   *stats.Int64Measure
@@ -314,6 +316,8 @@ func InitCensus(nodeType NodeType, version string) {
 	census.mHTTPClientTimeout1 = stats.Int64("http_client_timeout_1", "Number of times HTTP connection was dropped before transcoding complete", "tot")
 	census.mHTTPClientTimeout2 = stats.Int64("http_client_timeout_2", "Number of times HTTP connection was dropped before transcoded segments was sent back to client", "tot")
 	census.mKafkaEventSendError = stats.Int64("kafka_event_send_errors", "Dropped Kafka events due to a full queue", "tot")
+	census.mLLMUsageIngestError = stats.Int64("llm_usage_ingest_errors", "Failed LLM usage ingest or report attempts", "tot")
+	census.mLLMUsageIngested = stats.Int64("llm_usage_tokens_ingested", "LLM tokens successfully ingested to OpenMeter", "tot")
 	census.mRealtimeRatio = stats.Float64("http_client_segment_transcoded_realtime_ratio", "Ratio of source segment duration / transcode time as measured on HTTP client", "rat")
 	census.mRealtime3x = stats.Int64("http_client_segment_transcoded_realtime_3x", "Number of segment transcoded 3x faster than realtime", "tot")
 	census.mRealtime2x = stats.Int64("http_client_segment_transcoded_realtime_2x", "Number of segment transcoded 2x faster than realtime", "tot")
@@ -513,6 +517,20 @@ func InitCensus(nodeType NodeType, version string) {
 			Description: "Dropped Kafka events due to a full queue",
 			TagKeys:     append([]tag.Key{census.kEventType}, baseTags...),
 			Aggregation: view.Count(),
+		},
+		{
+			Name:        "llm_usage_ingest_errors",
+			Measure:     census.mLLMUsageIngestError,
+			Description: "Failed LLM usage ingest or report attempts",
+			TagKeys:     append([]tag.Key{census.kErrorCode}, baseTags...),
+			Aggregation: view.Count(),
+		},
+		{
+			Name:        "llm_usage_tokens_ingested",
+			Measure:     census.mLLMUsageIngested,
+			Description: "LLM tokens successfully ingested to OpenMeter",
+			TagKeys:     baseTags,
+			Aggregation: view.Sum(),
 		},
 		{
 			Name:        "http_client_segment_transcoded_realtime_ratio",
@@ -1816,6 +1834,32 @@ func KafkaEventSendError(eventType string) {
 	if err := stats.RecordWithTags(census.ctx,
 		[]tag.Mutator{tag.Insert(census.kEventType, eventType)},
 		census.mKafkaEventSendError.M(1)); err != nil {
+		glog.Errorf("Error recording metrics err=%q", err)
+	}
+}
+
+// LLMUsageIngestError records a failed LLM usage report or OpenMeter ingest.
+func LLMUsageIngestError(code string) {
+	if !Enabled || census.mLLMUsageIngestError == nil {
+		return
+	}
+	if err := stats.RecordWithTags(census.ctx,
+		[]tag.Mutator{tag.Insert(census.kErrorCode, code)},
+		census.mLLMUsageIngestError.M(1)); err != nil {
+		glog.Errorf("Error recording metrics err=%q", err)
+	}
+}
+
+// LLMUsageIngested records successfully ingested input+output token counts.
+func LLMUsageIngested(inputTokens, outputTokens int) {
+	if !Enabled || census.mLLMUsageIngested == nil {
+		return
+	}
+	total := int64(inputTokens + outputTokens)
+	if total < 0 {
+		return
+	}
+	if err := stats.RecordWithTags(census.ctx, []tag.Mutator{}, census.mLLMUsageIngested.M(total)); err != nil {
 		glog.Errorf("Error recording metrics err=%q", err)
 	}
 }

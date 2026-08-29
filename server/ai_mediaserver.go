@@ -321,9 +321,10 @@ func (ls *LivepeerServer) LLM() http.Handler {
 		clog.V(common.VERBOSE).Infof(ctx, "Received LLM request model_id=%v stream=%v", *req.Model, *req.Stream)
 
 		params := aiRequestParams{
-			node:        ls.LivepeerNode,
-			os:          drivers.NodeStorage.NewSession(requestID),
-			sessManager: ls.AISessionManager,
+			node:             ls.LivepeerNode,
+			os:               drivers.NodeStorage.NewSession(requestID),
+			sessManager:      ls.AISessionManager,
+			llmSignerHeaders: llmSignerHeadersFromRequest(r, ls.LivepeerNode),
 		}
 
 		start := time.Now()
