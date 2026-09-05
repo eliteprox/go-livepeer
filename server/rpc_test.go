@@ -265,6 +265,23 @@ func (r *stubOrchestrator) DebitFees(addr ethcommon.Address, manifestID core.Man
 	r.balances[addr][manifestID].Sub(r.balances[addr][manifestID], fee)
 }
 
+func (r *stubOrchestrator) DebitFeesRat(addr ethcommon.Address, manifestID core.ManifestID, price *net.PriceInfo, units *big.Rat) {
+	if r.balances == nil || units == nil || units.Sign() == 0 || price == nil || price.GetPixelsPerUnit() == 0 {
+		return
+	}
+	priceRat := big.NewRat(price.GetPricePerUnit(), price.GetPixelsPerUnit())
+	fee := new(big.Rat).Mul(priceRat, units)
+	r.balanceMu.Lock()
+	defer r.balanceMu.Unlock()
+	if r.balances[addr] == nil {
+		r.balances[addr] = make(map[core.ManifestID]*big.Rat)
+	}
+	if r.balances[addr][manifestID] == nil {
+		r.balances[addr][manifestID] = big.NewRat(0, 1)
+	}
+	r.balances[addr][manifestID].Sub(r.balances[addr][manifestID], fee)
+}
+
 func (r *stubOrchestrator) Balance(addr ethcommon.Address, manifestID core.ManifestID) *big.Rat {
 	if r.balances != nil {
 		r.balanceMu.Lock()
@@ -1827,6 +1844,10 @@ func (o *mockOrchestrator) SufficientBalance(addr ethcommon.Address, manifestID 
 
 func (o *mockOrchestrator) DebitFees(addr ethcommon.Address, manifestID core.ManifestID, price *net.PriceInfo, pixels int64) {
 	o.Called(addr, manifestID, price, pixels)
+}
+
+func (o *mockOrchestrator) DebitFeesRat(addr ethcommon.Address, manifestID core.ManifestID, price *net.PriceInfo, units *big.Rat) {
+	o.Called(addr, manifestID, price, units)
 }
 
 func (o *mockOrchestrator) Capabilities() *net.Capabilities {

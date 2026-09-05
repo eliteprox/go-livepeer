@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -72,6 +73,17 @@ func (c *testEthClient) Sign(msg []byte) ([]byte, error) {
 
 func (c *testEthClient) SignTypedData(apitypes.TypedData) ([]byte, error) {
 	return []byte("stub"), nil
+}
+
+func signOrchPayload(t *testing.T, key *ecdsa.PrivateKey, payload []byte) string {
+	t.Helper()
+	ethMsg := accounts.TextHash(crypto.Keccak256(payload))
+	sig, err := crypto.Sign(ethMsg, key)
+	require.NoError(t, err)
+	if sig[64] == 0 || sig[64] == 1 {
+		sig[64] += 27
+	}
+	return "0x" + hex.EncodeToString(sig)
 }
 
 func TestGenerateLivePayment_RequestValidationErrors(t *testing.T) {
@@ -428,10 +440,10 @@ func TestParseRemotePaymentMaxPrice(t *testing.T) {
 			want:        big.NewRat(7, 1),
 		},
 		{
-			name:        "fixed",
-			maxPrice:    &runner.LiveRunnerPriceInfo{Price: json.Number("3"), Currency: "wei", Unit: "fixed"},
-			paymentType: RemoteType_Fixed,
-			want:        big.NewRat(3, 1),
+			name:        "usage",
+			maxPrice:    &runner.LiveRunnerPriceInfo{Price: json.Number("10"), Currency: "wei", Unit: "usage"},
+			paymentType: RemoteType_Usage,
+			want:        big.NewRat(10, 1),
 		},
 		{
 			name:        "malformed price",
@@ -1021,6 +1033,103 @@ func TestGenerateLivePayment_FixedBillsOneUnitAndAllowsState(t *testing.T) {
 	require.Equal(RemoteType_Fixed, secondState.Type)
 	require.EqualValues(1, secondState.SequenceNumber)
 	require.Equal("0", secondState.Balance)
+}
+
+func TestGenerateLivePayment_UsageLocksQuoteNotMaxPrice(t *testing.T) {
+	require := require.New(t)
+
+	ethClient := newTestEthClient(t)
+	node, _ := core.NewLivepeerNode(ethClient, "", nil)
+	node.Balances = core.NewAddressBalances(time.Minute)
+	defer node.Balances.StopCleanup()
+	node.Sender = newMockSender(mockSenderConfig{})
+	ls := &LivepeerServer{LivepeerNode: node}
+
+	orchKey, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
+	require.NoError(err)
+	orchAddr := crypto.PubkeyToAddress(orchKey.PublicKey)
+
+	oInfo := &net.OrchestratorInfo{
+		Address:   orchAddr.Bytes(),
+		PriceInfo: &net.PriceInfo{PricePerUnit: 10, PixelsPerUnit: 1},
+		TicketParams: &net.TicketParams{
+			Recipient: pm.RandAddress().Bytes(),
+		},
+		AuthToken: stubAuthToken,
+	}
+	orchBlob, err := proto.Marshal(oInfo)
+	require.NoError(err)
+
+	quote := &runner.LiveRunnerQuote{
+		QuoteID:          "q_usage",
+		App:              "livepeer-example/fal-flux",
+		ManifestID:       "usage-manifest",
+		SellPrice:        json.Number("0.02625"),
+		SellUnit:         "image",
+		UpchargeBps:      500,
+		WeiPricePerUnit:  10,
+		WeiPixelsPerUnit: 1,
+		MaxUnits:         json.Number("1"),
+		ExpiresAt:        time.Now().Add(time.Hour).Unix(),
+	}
+	payload, err := quote.SigningBytes()
+	require.NoError(err)
+	quote.OrchSig = signOrchPayload(t, orchKey, payload)
+
+	doPayment := func(manifestID string, state RemotePaymentStateSig, att *runner.LiveRunnerUsageAttestation, maxPrice *runner.LiveRunnerPriceInfo, withQuote bool) *httptest.ResponseRecorder {
+		req := RemotePaymentRequest{
+			Orchestrator: orchBlob,
+			ManifestID:   manifestID,
+			Type:         RemoteType_Usage,
+			Attestation:  att,
+			MaxPrice:     maxPrice,
+			State:        state,
+		}
+		if withQuote {
+			req.Quote = quote
+		}
+		body, err := json.Marshal(req)
+		require.NoError(err)
+		rr := httptest.NewRecorder()
+		ls.GenerateLivePayment(rr, httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(body)))
+		return rr
+	}
+
+	missing := doPayment("", RemotePaymentStateSig{}, nil, nil, false)
+	require.Equal(http.StatusBadRequest, missing.Code)
+	require.Contains(missing.Body.String(), "orch-signed quote")
+
+	ceiling := &runner.LiveRunnerPriceInfo{Price: json.Number("5"), Currency: "wei", Unit: "usage"}
+	tooLow := doPayment("usage-manifest", RemotePaymentStateSig{}, nil, ceiling, true)
+	require.Equal(HTTPStatusPriceExceeded, tooLow.Code)
+
+	maxPrice := &runner.LiveRunnerPriceInfo{Price: json.Number("100"), Currency: "wei", Unit: "usage"}
+	first := doPayment("usage-manifest", RemotePaymentStateSig{}, nil, maxPrice, true)
+	require.Equal(http.StatusOK, first.Code, first.Body.String())
+	require.Equal(http.StatusOK, first.Code, first.Body.String())
+	var firstResp RemotePaymentResponse
+	require.NoError(json.NewDecoder(first.Body).Decode(&firstResp))
+	var firstState RemotePaymentState
+	require.NoError(json.Unmarshal(firstResp.State.State, &firstState))
+	require.Equal(RemoteType_Usage, firstState.Type)
+	require.Equal("q_usage", firstState.QuoteID)
+	require.Equal("image", firstState.SellUnit)
+	require.Equal(500, firstState.UpchargeBps)
+	require.EqualValues(10, firstState.InitialPricePerUnit)
+	require.EqualValues(1, firstState.InitialPixelsPerUnit)
+
+	att := &runner.LiveRunnerUsageAttestation{
+		QuoteID:       quote.QuoteID,
+		BillableUnits: json.Number("2"),
+		SellPrice:     quote.SellPrice,
+		CostWei:       "20",
+	}
+	attPayload, err := att.SigningBytes()
+	require.NoError(err)
+	att.OrchSig = signOrchPayload(t, orchKey, attPayload)
+
+	second := doPayment("usage-manifest", firstResp.State, att, maxPrice, true)
+	require.Equal(http.StatusOK, second.Code, second.Body.String())
 }
 
 func TestGenerateLivePayment_WebhookCallback(t *testing.T) {

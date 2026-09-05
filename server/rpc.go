@@ -497,7 +497,7 @@ func (h *lphttp) RefreshPayment(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	paymentURL := h.orchestrator.ServiceURI().JoinPath("payment").String()
-	data, err := marshalLivePaymentChallengeResponse(oInfo, paymentURL)
+	data, err := marshalLivePaymentChallengeResponse(oInfo, paymentURL, nil)
 	if err != nil {
 		respondJsonError(ctx, w, err, http.StatusInternalServerError)
 		return

@@ -44,6 +44,7 @@ const (
 	LiveRunnerModePersistent      = "persistent"
 	LiveRunnerModeSingleShot      = "single-shot"
 	liveRunnerModeSingleShotAlias = "single_shot"
+	LiveRunnerPaymentUnitUsage    = "usage"
 )
 
 const (
@@ -79,10 +80,28 @@ type LiveRunnerGPU struct {
 	VRAMMB int    `json:"vram_mb,omitempty"`
 }
 
+type LiveRunnerUpstreamPrice struct {
+	Provider   string      `json:"provider,omitempty"`
+	EndpointID string      `json:"endpoint_id,omitempty"`
+	Unit       string      `json:"unit,omitempty"`
+	UnitPrice  json.Number `json:"unit_price,omitempty"`
+	Currency   string      `json:"currency,omitempty"`
+	FetchedAt  string      `json:"fetched_at,omitempty"`
+}
+
+type LiveRunnerSellPrice struct {
+	Unit        string      `json:"unit,omitempty"`
+	Price       json.Number `json:"price,omitempty"`
+	Currency    string      `json:"currency,omitempty"`
+	UpchargeBps int         `json:"upcharge_bps,omitempty"`
+}
+
 type LiveRunnerPriceInfo struct {
-	Price    json.Number `json:"price"`
-	Currency string      `json:"currency,omitempty"`
-	Unit     string      `json:"unit,omitempty"`
+	Price    json.Number              `json:"price"`
+	Currency string                   `json:"currency,omitempty"`
+	Unit     string                   `json:"unit,omitempty"`
+	Upstream *LiveRunnerUpstreamPrice `json:"upstream,omitempty"`
+	Sell     *LiveRunnerSellPrice      `json:"sell,omitempty"`
 }
 
 func (p LiveRunnerPriceInfo) priceRat() (*big.Rat, error) {
@@ -121,7 +140,37 @@ func normalizeLiveRunnerPriceInfo(priceInfo LiveRunnerPriceInfo) (LiveRunnerPric
 	}
 	priceInfo.Currency = currency
 	priceInfo.Unit = unit
+	if err := normalizeLiveRunnerSellAndUpstream(&priceInfo); err != nil {
+		return LiveRunnerPriceInfo{}, err
+	}
+	applyOperatorUpcharge(&priceInfo)
 	return priceInfo, nil
+}
+
+func liveRunnerPriceEqual(a, b LiveRunnerPriceInfo) bool {
+	if a.Price.String() != b.Price.String() || a.Currency != b.Currency || a.Unit != b.Unit {
+		return false
+	}
+	return liveRunnerSellKey(a.Sell) == liveRunnerSellKey(b.Sell) &&
+		liveRunnerUpstreamKey(a.Upstream) == liveRunnerUpstreamKey(b.Upstream)
+}
+
+func liveRunnerSellKey(sell *LiveRunnerSellPrice) string {
+	if sell == nil {
+		return ""
+	}
+	return strings.TrimSpace(sell.Price.String()) + "|" +
+		strings.ToLower(strings.TrimSpace(sell.Unit)) + "|" +
+		fmt.Sprintf("%d", sell.UpchargeBps)
+}
+
+func liveRunnerUpstreamKey(upstream *LiveRunnerUpstreamPrice) string {
+	if upstream == nil {
+		return ""
+	}
+	return strings.TrimSpace(upstream.UnitPrice.String()) + "|" +
+		strings.ToLower(strings.TrimSpace(upstream.Unit)) + "|" +
+		strings.TrimSpace(upstream.EndpointID)
 }
 
 type LiveRunnerHeartbeatRequest struct {
@@ -336,6 +385,7 @@ func NewLiveRunnerRegistry(config LiveRunnerRegistryConfig) *LiveRunnerRegistry 
 	}
 	go r.healthLoop()
 	go r.expiryLoop()
+	r.startFalPricingLoop()
 	return r
 }
 
@@ -1026,6 +1076,18 @@ func (r *LiveRunnerRegistry) PaymentInfo(runnerID string) (*LiveRunnerPriceInfo,
 		return nil, &RunnerError{StatusCode: http.StatusServiceUnavailable, Message: fmt.Sprintf("live runner price unavailable: %v", err)}
 	}
 	return &priceInfo, nil
+}
+
+func (r *LiveRunnerRegistry) RunnerApp(runnerID string) (string, error) {
+	runner, unlock, err := r.lockLiveRunner(runnerID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if !isReadyStatus(runner.Status) {
+		return "", &RunnerError{StatusCode: http.StatusNotFound, Message: "runner not found"}
+	}
+	return runner.App, nil
 }
 
 func (r *LiveRunnerRegistry) SessionPriceInfo(runnerID, sessionID string) (LiveRunnerPriceInfo, error) {
@@ -1738,7 +1800,7 @@ func (runner *liveRunner) updatePriceConverterLocked() {
 	}
 	// Heartbeats call this each time, but converter rebuild work is only done when
 	// price_info changes (or when a converter is missing after a prior failure).
-	priceChanged := runner.priceSource != runner.PriceInfo
+	priceChanged := !liveRunnerPriceEqual(runner.priceSource, runner.PriceInfo)
 	if runner.converter != nil && !priceChanged {
 		return
 	}
@@ -1771,6 +1833,22 @@ func newConverterForRunner(priceInfo LiveRunnerPriceInfo) (*core.AutoConvertedPr
 		return nil, err
 	}
 
+	usdPrice, err := converterUSDPrice(priceInfo)
+	if err != nil {
+		return nil, err
+	}
+	return core.NewAutoConvertedPrice("USD", usdPrice, nil)
+}
+
+func converterUSDPrice(priceInfo LiveRunnerPriceInfo) (*big.Rat, error) {
+	if priceInfo.Sell != nil {
+		price := strings.TrimSpace(priceInfo.Sell.Price.String())
+		rat, ok := new(big.Rat).SetString(price)
+		if !ok || rat.Sign() <= 0 {
+			return nil, fmt.Errorf("price_info.sell.price must be a positive decimal")
+		}
+		return rat, nil
+	}
 	usdPrice, err := priceInfo.priceRat()
 	if err != nil {
 		return nil, err
@@ -1784,7 +1862,7 @@ func newConverterForRunner(priceInfo LiveRunnerPriceInfo) (*core.AutoConvertedPr
 	case "fixed":
 		// Fixed prices are already denominated per request.
 	}
-	return core.NewAutoConvertedPrice("USD", usdPrice, nil)
+	return usdPrice, nil
 }
 
 func (runner *liveRunner) convertPrice() (LiveRunnerPriceInfo, error) {
@@ -1798,15 +1876,21 @@ func (runner *liveRunner) convertPrice() (LiveRunnerPriceInfo, error) {
 	if price.Sign() <= 0 {
 		return LiveRunnerPriceInfo{}, fmt.Errorf("converted live runner price must be at least one wei")
 	}
-	return LiveRunnerPriceInfo{
+	converted := LiveRunnerPriceInfo{
 		Price:    json.Number(fmt.Sprintf("%d", price.Num().Int64())),
 		Currency: "wei",
-		Unit:     convertedLiveRunnerPriceUnit(runner.PriceInfo.Unit),
-	}, nil
+		Unit:     convertedLiveRunnerPriceUnit(runner.PriceInfo),
+		Upstream: runner.PriceInfo.Upstream,
+		Sell:     runner.PriceInfo.Sell,
+	}
+	return converted, nil
 }
 
-func convertedLiveRunnerPriceUnit(unit string) string {
-	switch strings.ToLower(strings.TrimSpace(unit)) {
+func convertedLiveRunnerPriceUnit(priceInfo LiveRunnerPriceInfo) string {
+	if priceInfo.Sell != nil {
+		return LiveRunnerPaymentUnitUsage
+	}
+	switch strings.ToLower(strings.TrimSpace(priceInfo.Unit)) {
 	case "720p":
 		return "720p-pixel-seconds"
 	case "fixed":

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"github.com/livepeer/go-livepeer/ai/runner"
@@ -35,6 +36,7 @@ const RefreshSessionOrchestratorURLHeader = "Livepeer-Orchestrator-URL"
 const RemoteType_Live = "live"
 const RemoteType_LiveVideoToVideo = "lv2v"
 const RemoteType_Fixed = "fixed"
+const RemoteType_Usage = "usage"
 const PipelineLiveVideoToVideo = "live-video-to-video"
 const remoteSignerAuthIDHeader = "Signer-Auth-Id"
 
@@ -159,6 +161,9 @@ type RemotePaymentState struct {
 	Type                 string
 	SequenceNumber       uint64
 	AuthID               string
+	QuoteID              string
+	SellUnit             string
+	UpchargeBps          int
 }
 
 type RemotePaymentStateSig struct {
@@ -189,6 +194,12 @@ type RemotePaymentRequest struct {
 
 	// Maximum acceptable price for this request. Optional.
 	MaxPrice *runner.LiveRunnerPriceInfo `json:"maxPrice,omitempty"`
+
+	// Orch-signed quote from the 402 challenge. Required for type=usage on first mint.
+	Quote *runner.LiveRunnerQuote `json:"quote,omitempty"`
+
+	// Orch-signed usage attestation. Required to settle type=usage.
+	Attestation *runner.LiveRunnerUsageAttestation `json:"attestation,omitempty"`
 
 	// Capabilities to include in the ticket. Optional; may be set for the lv2v job type.
 	Capabilities []byte `json:"capabilities"`
@@ -246,8 +257,10 @@ func parseRemotePaymentMaxPrice(maxPrice *runner.LiveRunnerPriceInfo, paymentTyp
 		expectedUnit = "720p-pixel-seconds"
 	case RemoteType_Fixed:
 		expectedUnit = "fixed"
+	case RemoteType_Usage:
+		expectedUnit = runner.LiveRunnerPaymentUnitUsage
 	default:
-		return nil, errors.New("maxPrice requires payment type live, lv2v, or fixed")
+		return nil, errors.New("maxPrice requires payment type live, lv2v, fixed, or usage")
 	}
 	if unit := strings.ToLower(strings.TrimSpace(maxPrice.Unit)); unit != expectedUnit {
 		return nil, fmt.Errorf("maxPrice.unit must be %s for payment type %s", expectedUnit, paymentType)
@@ -446,6 +459,12 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			InitialPixelsPerUnit: priceInfo.PixelsPerUnit,
 			Type:                 req.Type,
 		}
+		if req.Type == RemoteType_Usage {
+			if err := lockUsageQuote(state, req, priceInfo, orchAddr); err != nil {
+				respondJsonError(ctx, w, err, http.StatusBadRequest)
+				return
+			}
+		}
 	}
 
 	stateID := core.ManifestID(state.StateID)
@@ -535,6 +554,7 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 
 	pixels := int64(0)
 	billableUnits := int64(req.InPixels)
+	var usageUnits *big.Rat
 	now := time.Now()
 	lastUpdate := state.LastUpdate
 	if lastUpdate.IsZero() {
@@ -557,12 +577,38 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		billableUnits = int64(math.Ceil(billableSecs)) // seconds to charge for
 	} else if req.Type == RemoteType_Fixed {
 		billableUnits = 1
+	} else if req.Type == RemoteType_Usage {
+		if req.Attestation != nil {
+			if err := verifyUsageAttestation(state, req.Attestation, orchAddr); err != nil {
+				respondJsonError(ctx, w, err, http.StatusBadRequest)
+				return
+			}
+			units, err := runner.ParsePositiveRat(req.Attestation.BillableUnits)
+			if err != nil {
+				respondJsonError(ctx, w, err, http.StatusBadRequest)
+				return
+			}
+			usageUnits = units
+			billableUnits = runner.CeilRatToInt64(units)
+		} else {
+			maxUnits := jsonNumberOrDefault(quoteMaxUnits(req.Quote, state), runner.DefaultUsageMaxUnits)
+			units, err := runner.ParsePositiveRat(maxUnits)
+			if err != nil {
+				respondJsonError(ctx, w, fmt.Errorf("invalid quote max_units: %w", err), http.StatusBadRequest)
+				return
+			}
+			usageUnits = units
+			billableUnits = runner.CeilRatToInt64(units)
+			if billableUnits <= 0 {
+				billableUnits = 1
+			}
+		}
 	} else if req.Type != "" {
 		err = errors.New("invalid job type")
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
 		return
 	}
-	if billableUnits <= 0 {
+	if billableUnits <= 0 && req.Type != RemoteType_Usage {
 		err = errors.New("missing billable unit or job type")
 		respondJsonError(ctx, w, err, http.StatusBadRequest)
 		return
@@ -595,6 +641,9 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 
 	// Compute required fee using initial price
 	fee := calculateFee(billableUnits, initialPrice)
+	if usageUnits != nil {
+		fee = calculateFeeRat(usageUnits, initialPrice)
+	}
 
 	// Create balance update
 	balUpdate, err := newBalanceUpdate(sess, fee)
@@ -604,13 +653,12 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if balUpdate.NumTickets <= 0 {
-		// No new tickets are needed when reserved balance already covers the
-		// required minimum credit (fee with ticket EV as the floor). Caller
-		// should retry once balance has been run down further.
-		err = errors.New("no tickets")
-		clog.Errorf(ctx, "No tickets")
-		respondJsonError(ctx, w, err, HTTPStatusNoTickets)
-		return
+		if req.Type != RemoteType_Usage || req.Attestation == nil {
+			err = errors.New("no tickets")
+			clog.Errorf(ctx, "No tickets")
+			respondJsonError(ctx, w, err, HTTPStatusNoTickets)
+			return
+		}
 	}
 	if balUpdate.NumTickets > 100 {
 		// Prevent both draining funds and perf issues
@@ -627,40 +675,41 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 	balUpdate.Debit = fee
 	balUpdate.Status = ReceivedChange
 
-	// Generate payment tickets
-	payment, err := genPayment(ctx, sess, balUpdate.NumTickets)
-	if err != nil {
-		clog.Errorf(ctx, "Could not create payment err=%q", err)
-		if monitor.Enabled {
-			monitor.PaymentCreateError(ctx)
+	payment := ""
+	segCreds := ""
+	if balUpdate.NumTickets > 0 {
+		payment, err = genPayment(ctx, sess, balUpdate.NumTickets)
+		if err != nil {
+			clog.Errorf(ctx, "Could not create payment err=%q", err)
+			if monitor.Enabled {
+				monitor.PaymentCreateError(ctx)
+			}
+			statusCode := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "Orchestrator price has more than doubled") {
+				statusCode = HTTPStatusPriceExceeded
+			}
+			respondJsonError(ctx, w, err, statusCode)
+			return
 		}
-		// Check if error is due to price increase validation (price-related error, not server error)
-		// NB: Do not really want this to drift for any length of time.
-		// The initial price is used to calculate the number of tickets needed,
-		// and if this is lower then the G will run out of credit on the O.
-		// The O should keep the price fixed per session anyway
-		statusCode := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "Orchestrator price has more than doubled") {
-			statusCode = HTTPStatusPriceExceeded
+		creds, credErr := genSegCreds(sess, &stream.HLSSegment{}, nil, false)
+		if credErr != nil {
+			respondJsonError(ctx, w, credErr, http.StatusInternalServerError)
+			return
 		}
-		respondJsonError(ctx, w, err, statusCode)
-		return
-	}
-
-	// Generate segment credentials with an empty segment
-	segCreds, err := genSegCreds(sess, &stream.HLSSegment{}, nil, false)
-	if err != nil {
-		respondJsonError(ctx, w, err, http.StatusInternalServerError)
-		return
+		segCreds = creds
 	}
 
 	// Complete balance update and set state to new balance
 	completeBalanceUpdate(sess, balUpdate) // Updates sessionBalance internally
 	newBal := sessionBalance.Balance()
 	if newBal == nil {
-		err = errors.New("zero balance?")
-		respondJsonError(ctx, w, err, http.StatusInternalServerError)
-		return
+		if req.Type == RemoteType_Usage && req.Attestation != nil {
+			newBal = new(big.Rat)
+		} else {
+			err = errors.New("zero balance?")
+			respondJsonError(ctx, w, err, http.StatusInternalServerError)
+			return
+		}
 	}
 	state.Balance = newBal.RatString()
 	state.LastUpdate = now
@@ -735,31 +784,45 @@ func (ls *LivepeerServer) GenerateLivePayment(w http.ResponseWriter, r *http.Req
 			pipeline = RemoteType_Live
 		} else if req.Type == RemoteType_Fixed {
 			pipeline = RemoteType_Fixed
+		} else if req.Type == RemoteType_Usage {
+			pipeline = RemoteType_Usage
 		}
-		// NB: This could could drop events if tha Kafka queue is full!
-		monitor.SendQueueEventAsync("create_signed_ticket", map[string]interface{}{
-			"session_id":         state.StateID,
-			"session_status":     sessionStatus,
-			"app":                state.App,
-			"pipeline":           pipeline,
-			"request_id":         requestID,
-			"orch_address":       orchAddr.Hex(),
-			"orch_url":           oInfo.Transcoder,
-			"manifest_id":        manifestID,
-			"pm_session_id":      sess.PMSessionID,
-			"current_time":       now.UTC(),
-			"current_time_unix":  now.UTC().UnixMilli(),
-			"previous_time":      lastUpdate.UTC(),
-			"previous_time_unix": lastUpdate.UTC().UnixMilli(),
-			"billable_secs":      billableSecs,
-			"pixels":             pixels,
-			"session_balance":    newBal.FloatString(0),
-			"computed_fee":       fee.FloatString(0),
-			"cost":               orchPrice.FloatString(10),
-			"sequence_number":    state.SequenceNumber,
-			"num_tickets":        balUpdate.NumTickets,
-			"auth_id":            state.AuthID,
-		})
+		emitKafka := req.Type != RemoteType_Usage || req.Attestation != nil
+		if emitKafka {
+			event := map[string]interface{}{
+				"session_id":         state.StateID,
+				"session_status":     sessionStatus,
+				"app":                state.App,
+				"pipeline":           pipeline,
+				"request_id":         requestID,
+				"orch_address":       orchAddr.Hex(),
+				"orch_url":           oInfo.Transcoder,
+				"manifest_id":        manifestID,
+				"pm_session_id":      sess.PMSessionID,
+				"current_time":       now.UTC(),
+				"current_time_unix":  now.UTC().UnixMilli(),
+				"previous_time":      lastUpdate.UTC(),
+				"previous_time_unix": lastUpdate.UTC().UnixMilli(),
+				"billable_secs":      billableSecs,
+				"pixels":             pixels,
+				"session_balance":    newBal.FloatString(0),
+				"computed_fee":       fee.FloatString(0),
+				"cost":               orchPrice.FloatString(10),
+				"sequence_number":    state.SequenceNumber,
+				"num_tickets":        balUpdate.NumTickets,
+				"auth_id":            state.AuthID,
+			}
+			if req.Type == RemoteType_Usage {
+				if usageUnits != nil {
+					units, _ := usageUnits.Float64()
+					event["billable_units"] = units
+				}
+				event["quote_id"] = state.QuoteID
+				event["sell_unit"] = state.SellUnit
+				event["upcharge_bps"] = state.UpchargeBps
+			}
+			monitor.SendQueueEventAsync("create_signed_ticket", event)
+		}
 	}
 
 	// Return payment (tickets), creds and signed state
@@ -861,4 +924,81 @@ func (ls *LivepeerServer) GetOrchestrators(pool *remoteDiscoveryPool, w http.Res
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func lockUsageQuote(state *RemotePaymentState, req RemotePaymentRequest, priceInfo *net.PriceInfo, orchAddr ethcommon.Address) error {
+	if req.Quote == nil {
+		return errors.New("usage payment requires an orch-signed quote")
+	}
+	if err := verifyOrchSigned(orchAddr, req.Quote.OrchSig, req.Quote.SigningBytes); err != nil {
+		return fmt.Errorf("invalid quote signature: %w", err)
+	}
+	if req.ManifestID != "" && req.Quote.ManifestID != req.ManifestID {
+		return errors.New("quote manifest_id mismatch")
+	}
+	if req.Quote.ExpiresAt > 0 && time.Now().Unix() > req.Quote.ExpiresAt {
+		return errors.New("quote expired")
+	}
+	if req.Quote.WeiPricePerUnit <= 0 || req.Quote.WeiPixelsPerUnit <= 0 {
+		return errors.New("quote is missing converted sell price")
+	}
+	if priceInfo.GetPricePerUnit() != req.Quote.WeiPricePerUnit || priceInfo.GetPixelsPerUnit() != req.Quote.WeiPixelsPerUnit {
+		return errors.New("quote sell price does not match orchestrator price")
+	}
+	state.InitialPricePerUnit = req.Quote.WeiPricePerUnit
+	state.InitialPixelsPerUnit = req.Quote.WeiPixelsPerUnit
+	state.QuoteID = req.Quote.QuoteID
+	state.SellUnit = req.Quote.SellUnit
+	state.UpchargeBps = req.Quote.UpchargeBps
+	return nil
+}
+
+func verifyUsageAttestation(state *RemotePaymentState, att *runner.LiveRunnerUsageAttestation, orchAddr ethcommon.Address) error {
+	if att == nil {
+		return errors.New("missing usage attestation")
+	}
+	if state.QuoteID == "" || att.QuoteID != state.QuoteID {
+		return errors.New("attestation quote_id does not match locked quote")
+	}
+	return verifyOrchSigned(orchAddr, att.OrchSig, att.SigningBytes)
+}
+
+func verifyOrchSigned(orchAddr ethcommon.Address, sigHex string, payload func() ([]byte, error)) error {
+	raw, err := payload()
+	if err != nil {
+		return err
+	}
+	sig, err := decodeOrchSig(sigHex)
+	if err != nil {
+		return err
+	}
+	if !lpcrypto.VerifySig(orchAddr, ethcrypto.Keccak256(raw), sig) {
+		return errors.New("invalid orchestrator signature")
+	}
+	return nil
+}
+
+func decodeOrchSig(sigHex string) ([]byte, error) {
+	trimmed := strings.TrimSpace(sigHex)
+	if strings.HasPrefix(trimmed, "0x") || strings.HasPrefix(trimmed, "0X") {
+		trimmed = trimmed[2:]
+	}
+	if trimmed == "" {
+		return nil, errors.New("missing signature")
+	}
+	return hex.DecodeString(trimmed)
+}
+
+func quoteMaxUnits(quote *runner.LiveRunnerQuote, state *RemotePaymentState) json.Number {
+	if quote != nil && strings.TrimSpace(quote.MaxUnits.String()) != "" {
+		return quote.MaxUnits
+	}
+	return json.Number(runner.DefaultUsageMaxUnits)
+}
+
+func jsonNumberOrDefault(value json.Number, fallback string) json.Number {
+	if strings.TrimSpace(value.String()) == "" {
+		return json.Number(fallback)
+	}
+	return value
 }

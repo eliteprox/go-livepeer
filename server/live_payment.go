@@ -337,6 +337,13 @@ func (r *remotePaymentSender) SendPayment(ctx context.Context, segmentInfo *Segm
 }
 
 func calculateFee(inPixels int64, price *net.PriceInfo) *big.Rat {
-	priceRat := big.NewRat(price.GetPricePerUnit(), price.GetPixelsPerUnit())
-	return priceRat.Mul(priceRat, big.NewRat(inPixels, 1))
+	return calculateFeeRat(big.NewRat(inPixels, 1), price)
+}
+
+func calculateFeeRat(units *big.Rat, price *net.PriceInfo) *big.Rat {
+	if units == nil || price == nil || price.GetPixelsPerUnit() == 0 {
+		return new(big.Rat)
+	}
+	priceRat := new(big.Rat).SetFrac64(price.GetPricePerUnit(), price.GetPixelsPerUnit())
+	return new(big.Rat).Mul(priceRat, units)
 }

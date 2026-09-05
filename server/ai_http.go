@@ -4,14 +4,17 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"io"
 	"log/slog"
+	"math/big"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +22,7 @@ import (
 	url2 "net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -114,6 +118,7 @@ type liveRunnerManager interface {
 	Unregister(runnerID, auth string) error
 	Runners() []runner.LiveRunnerDiscoveryRunner
 	PaymentInfo(runnerID string) (*runner.LiveRunnerPriceInfo, error)
+	RunnerApp(runnerID string) (string, error)
 	ReserveSession(runnerID string, sessionID ...string) (string, string, error)
 	ReleaseSession(runnerID, sessionID string) error
 	SessionPriceInfo(runnerID, sessionID string) (runner.LiveRunnerPriceInfo, error)
@@ -181,11 +186,12 @@ type liveRunnerSessionResponse struct {
 }
 
 type liveRunnerPaymentChallengeResponse struct {
-	PaymentParams string `json:"payment_params"`
+	PaymentParams string                  `json:"payment_params"`
 	// Keep the URL in top-level JSON so clients do not need to parse the protobuf just to route payment.
-	Orchestrator string `json:"orchestrator"`
-	ManifestID   string `json:"manifest_id"`
-	PaymentURL   string `json:"payment_url"`
+	Orchestrator string                 `json:"orchestrator"`
+	ManifestID   string                 `json:"manifest_id"`
+	PaymentURL   string                 `json:"payment_url"`
+	Quote        *runner.LiveRunnerQuote `json:"quote,omitempty"`
 }
 
 type liveRunnerTrickleChannelRequest struct {
@@ -271,11 +277,12 @@ func (h *lphttp) reservePaidLiveRunnerSession(
 	cancelRequest func(),
 ) (string, string, bool) {
 	// This helper owns all challenge and error responses for paid reservations.
-	fixedPayment := strings.EqualFold(strings.TrimSpace(priceInfo.Unit), "fixed")
+	fixedPayment := strings.EqualFold(strings.TrimSpace(priceInfo.Unit), "fixed") && !runner.IsUsagePriced(priceInfo)
+	usagePayment := runner.IsUsagePriced(priceInfo)
 	var newPaymentProcessor func(context.Context, time.Duration, func(int64) error) *LivePaymentProcessor
 
 	if r.Header.Get(paymentHeader) == "" && r.Header.Get(segmentHeader) == "" {
-		h.runnerChallenge(w, r, priceInfo)
+		h.runnerChallenge(w, r, manager, runnerID, priceInfo)
 		return "", "", false
 	}
 	payment, segData, _, err := h.processPaymentAndSegmentHeaders(w, r)
@@ -287,7 +294,7 @@ func (h *lphttp) reservePaidLiveRunnerSession(
 		return "", "", false
 	}
 
-	if fixedPayment {
+	if usagePayment || fixedPayment {
 		expectedPrice, priceErr := priceInfo.Price.Int64()
 		if priceErr != nil || payment.GetExpectedPrice() == nil || payment.GetExpectedPrice().GetPricePerUnit() != expectedPrice || payment.GetExpectedPrice().GetPixelsPerUnit() != 1 {
 			respondWithError(w, "payment price does not match live runner price", http.StatusBadRequest)
@@ -320,6 +327,14 @@ func (h *lphttp) reservePaidLiveRunnerSession(
 	}
 
 	paymentReceiver := livePaymentReceiver{orchestrator: h.orchestrator}
+	if usagePayment {
+		storeLiveRunnerUsageSettle(sessionID, liveRunnerUsageSettle{
+			sender: getPaymentSender(payment),
+			quote:  loadLiveRunnerQuote(string(segData.ManifestID)),
+			price:  payment.GetExpectedPrice(),
+		})
+		return sessionID, appURL, true
+	}
 	if fixedPayment {
 		err := paymentReceiver.AccountPayment(ctx, &SegmentInfoReceiver{
 			sender:    getPaymentSender(payment),
@@ -392,7 +407,7 @@ func preparePaymentProcessor(unit string) (func(context.Context, time.Duration, 
 	}
 }
 
-func (h *lphttp) runnerChallenge(w http.ResponseWriter, r *http.Request, priceInfo *runner.LiveRunnerPriceInfo) {
+func (h *lphttp) runnerChallenge(w http.ResponseWriter, r *http.Request, manager liveRunnerManager, runnerID string, priceInfo *runner.LiveRunnerPriceInfo) {
 	sender, err := h.runnerSender(r)
 	if err != nil {
 		respondJsonError(r.Context(), w, err, http.StatusPaymentRequired)
@@ -403,8 +418,26 @@ func (h *lphttp) runnerChallenge(w http.ResponseWriter, r *http.Request, priceIn
 		respondWithError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	app := ""
+	if manager != nil {
+		if got, appErr := manager.RunnerApp(runnerID); appErr == nil {
+			app = got
+		}
+	}
+	quote, err := runner.NewLiveRunnerQuote(app, oInfo.GetAuthToken().GetSessionId(), *priceInfo, time.Unix(oInfo.GetAuthToken().GetExpiration(), 0))
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if quote != nil {
+		if err := signLiveRunnerQuote(h.orchestrator, quote); err != nil {
+			respondWithError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		storeLiveRunnerQuote(quote.ManifestID, quote)
+	}
 	paymentURL := h.orchestrator.ServiceURI().JoinPath("apps", r.PathValue("runner_id"), "session", oInfo.GetAuthToken().GetSessionId(), "payment").String()
-	data, err := marshalLivePaymentChallengeResponse(oInfo, paymentURL)
+	data, err := marshalLivePaymentChallengeResponse(oInfo, paymentURL, quote)
 	if err != nil {
 		respondWithError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -430,7 +463,7 @@ func (h *lphttp) scopePaymentChallenge(w http.ResponseWriter, r *http.Request) (
 		return false, err
 	}
 	paymentURL := h.orchestrator.ServiceURI().JoinPath("payment").String()
-	data, err := marshalLivePaymentChallengeResponse(oInfo, paymentURL)
+	data, err := marshalLivePaymentChallengeResponse(oInfo, paymentURL, nil)
 	if err != nil {
 		return false, err
 	}
@@ -440,7 +473,7 @@ func (h *lphttp) scopePaymentChallenge(w http.ResponseWriter, r *http.Request) (
 	return true, nil
 }
 
-func marshalLivePaymentChallengeResponse(oInfo *lpnet.OrchestratorInfo, paymentURL string) ([]byte, error) {
+func marshalLivePaymentChallengeResponse(oInfo *lpnet.OrchestratorInfo, paymentURL string, quote *runner.LiveRunnerQuote) ([]byte, error) {
 	buf, err := proto.Marshal(oInfo)
 	if err != nil {
 		return nil, err
@@ -450,6 +483,7 @@ func marshalLivePaymentChallengeResponse(oInfo *lpnet.OrchestratorInfo, paymentU
 		Orchestrator:  oInfo.GetTranscoder(),
 		ManifestID:    oInfo.GetAuthToken().GetSessionId(),
 		PaymentURL:    paymentURL,
+		Quote:         quote,
 	})
 }
 
@@ -548,7 +582,7 @@ func (h *lphttp) PaymentForLiveRunnerSession(w http.ResponseWriter, r *http.Requ
 		respondWithLiveRunnerError(w, err)
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(priceInfo.Unit), "fixed") {
+	if strings.EqualFold(strings.TrimSpace(priceInfo.Unit), "fixed") || runner.IsUsagePriced(&priceInfo) {
 		respondWithError(w, "fixed-price live runner sessions do not accept follow-up payments", http.StatusConflict)
 		return
 	}
@@ -749,7 +783,7 @@ func (h *lphttp) ProxyLiveRunnerSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.proxyLiveRunner(w, r, runnerID, sessionID, sessionToken, endpoint, r.PathValue("app_path"))
+	h.proxyLiveRunner(w, r, runnerID, sessionID, sessionToken, endpoint, r.PathValue("app_path"), nil)
 }
 
 func (h *lphttp) ProxyLiveRunnerSingleShot(w http.ResponseWriter, r *http.Request) {
@@ -805,7 +839,8 @@ func (h *lphttp) ProxyLiveRunnerSingleShot(w http.ResponseWriter, r *http.Reques
 		respondWithLiveRunnerError(w, err)
 		return
 	}
-	h.proxyLiveRunner(w, r.Clone(ctx), runnerID, sessionID, sessionToken, endpoint, r.PathValue("app_path"))
+	settle, _ := takeLiveRunnerUsageSettle(sessionID)
+	h.proxyLiveRunner(w, r.Clone(ctx), runnerID, sessionID, sessionToken, endpoint, r.PathValue("app_path"), settle)
 }
 
 func (h *lphttp) tryLiveRunnerProxy(w http.ResponseWriter, r *http.Request) bool {
@@ -828,11 +863,11 @@ func (h *lphttp) tryLiveRunnerProxy(w http.ResponseWriter, r *http.Request) bool
 		h.transRPC.ServeHTTP(w, localRequest)
 		return true
 	}
-	h.proxyLiveRunner(w, r, route.RunnerID, route.SessionID, route.SessionToken, route.TargetURL, route.AppPath)
+	h.proxyLiveRunner(w, r, route.RunnerID, route.SessionID, route.SessionToken, route.TargetURL, route.AppPath, nil)
 	return true
 }
 
-func (h *lphttp) proxyLiveRunner(w http.ResponseWriter, r *http.Request, runnerID, sessionID, sessionToken, endpoint, appPath string) {
+func (h *lphttp) proxyLiveRunner(w http.ResponseWriter, r *http.Request, runnerID, sessionID, sessionToken, endpoint, appPath string, settle *liveRunnerUsageSettle) {
 	target, err := url2.Parse(endpoint)
 	if err != nil {
 		respondWithError(w, err.Error(), http.StatusBadGateway)
@@ -861,7 +896,188 @@ func (h *lphttp) proxyLiveRunner(w http.ResponseWriter, r *http.Request, runnerI
 			respondWithError(w, err.Error(), http.StatusBadGateway)
 		},
 	}
+	if settle != nil {
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			return h.settleLiveRunnerUsage(resp, sessionID, settle)
+		}
+	}
 	proxy.ServeHTTP(w, r)
+}
+
+type liveRunnerUsageSettle struct {
+	sender ethcommon.Address
+	quote  *runner.LiveRunnerQuote
+	price  *lpnet.PriceInfo
+}
+
+var liveRunnerQuotes sync.Map
+var liveRunnerSettles sync.Map
+
+func storeLiveRunnerQuote(manifestID string, quote *runner.LiveRunnerQuote) {
+	if manifestID == "" || quote == nil {
+		return
+	}
+	liveRunnerQuotes.Store(manifestID, quote)
+}
+
+func loadLiveRunnerQuote(manifestID string) *runner.LiveRunnerQuote {
+	got, ok := liveRunnerQuotes.Load(manifestID)
+	if !ok {
+		return nil
+	}
+	quote, _ := got.(*runner.LiveRunnerQuote)
+	return quote
+}
+
+func storeLiveRunnerUsageSettle(sessionID string, settle liveRunnerUsageSettle) {
+	if sessionID == "" {
+		return
+	}
+	copied := settle
+	liveRunnerSettles.Store(sessionID, &copied)
+}
+
+func takeLiveRunnerUsageSettle(sessionID string) (*liveRunnerUsageSettle, bool) {
+	got, ok := liveRunnerSettles.LoadAndDelete(sessionID)
+	if !ok {
+		return nil, false
+	}
+	settle, _ := got.(*liveRunnerUsageSettle)
+	return settle, settle != nil
+}
+
+func signLiveRunnerQuote(orch Orchestrator, quote *runner.LiveRunnerQuote) error {
+	if quote == nil {
+		return nil
+	}
+	payload, err := quote.SigningBytes()
+	if err != nil {
+		return err
+	}
+	sig, err := orch.Sign(payload)
+	if err != nil {
+		return err
+	}
+	if len(sig) == 0 {
+		return fmt.Errorf("orchestrator quote signature is empty")
+	}
+	quote.OrchSig = "0x" + hex.EncodeToString(sig)
+	return nil
+}
+
+func signLiveRunnerAttestation(orch Orchestrator, att *runner.LiveRunnerUsageAttestation) error {
+	if att == nil {
+		return nil
+	}
+	payload, err := att.SigningBytes()
+	if err != nil {
+		return err
+	}
+	sig, err := orch.Sign(payload)
+	if err != nil {
+		return err
+	}
+	if len(sig) == 0 {
+		return fmt.Errorf("orchestrator attestation signature is empty")
+	}
+	att.OrchSig = "0x" + hex.EncodeToString(sig)
+	return nil
+}
+
+func (h *lphttp) settleLiveRunnerUsage(resp *http.Response, sessionID string, settle *liveRunnerUsageSettle) error {
+	if settle == nil || settle.quote == nil || settle.price == nil {
+		return failClosedUsageResponse(resp, "missing locked usage quote")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		h.debitLiveRunnerUsage(settle.sender, sessionID, settle.price, new(big.Rat))
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return failClosedUsageResponse(resp, "failed to read runner body for usage settle")
+	}
+	units, present, err := parseRunnerBillableUnits(body)
+	if err != nil || !present || units == nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return failClosedUsageResponse(resp, "runner result missing billable_units")
+	}
+	h.debitLiveRunnerUsage(settle.sender, sessionID, settle.price, units)
+	cost := calculateFeeRat(units, settle.price)
+	att := &runner.LiveRunnerUsageAttestation{
+		QuoteID:       settle.quote.QuoteID,
+		BillableUnits: json.Number(units.FloatString(18)),
+		SellPrice:     settle.quote.SellPrice,
+		CostWei:       cost.FloatString(0),
+	}
+	if err := signLiveRunnerAttestation(h.orchestrator, att); err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return failClosedUsageResponse(resp, err.Error())
+	}
+	raw, err := json.Marshal(att)
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return failClosedUsageResponse(resp, err.Error())
+	}
+	resp.Header.Set("X-Livepeer-Quote-Id", settle.quote.QuoteID)
+	resp.Header.Set("X-Livepeer-Billable-Units", units.FloatString(18))
+	resp.Header.Set("X-Livepeer-Sell-Price", settle.quote.SellPrice.String())
+	resp.Header.Set("X-Livepeer-Cost-Wei", att.CostWei)
+	resp.Header.Set("X-Livepeer-Quote-Sig", att.OrchSig)
+	resp.Header.Set("X-Livepeer-Usage-Attestation", base64.StdEncoding.EncodeToString(raw))
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	resp.Header.Del("Transfer-Encoding")
+	return nil
+}
+
+func failClosedUsageResponse(resp *http.Response, message string) error {
+	resp.StatusCode = http.StatusBadGateway
+	resp.Status = http.StatusText(http.StatusBadGateway)
+	payload, _ := json.Marshal(map[string]string{"error": message})
+	resp.Body = io.NopCloser(bytes.NewReader(payload))
+	resp.ContentLength = int64(len(payload))
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(payload)))
+	resp.Header.Del("Transfer-Encoding")
+	return nil
+}
+
+func parseRunnerBillableUnits(body []byte) (*big.Rat, bool, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false, err
+	}
+	raw, ok := payload["billable_units"]
+	if !ok {
+		return nil, false, nil
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return nil, true, nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return nil, true, err
+	}
+	units, err := runner.ParsePositiveRat(number)
+	if err != nil {
+		return nil, true, err
+	}
+	return units, true, nil
+}
+
+func (h *lphttp) debitLiveRunnerUsage(sender ethcommon.Address, sessionID string, price *lpnet.PriceInfo, units *big.Rat) {
+	if units == nil {
+		units = new(big.Rat)
+	}
+	if ratDebitor, ok := h.orchestrator.(interface {
+		DebitFeesRat(ethcommon.Address, core.ManifestID, *lpnet.PriceInfo, *big.Rat)
+	}); ok {
+		ratDebitor.DebitFeesRat(sender, core.ManifestID(sessionID), price, units)
+		return
+	}
+	h.orchestrator.DebitFees(sender, core.ManifestID(sessionID), price, runner.CeilRatToInt64(units))
 }
 
 func respondWithLiveRunnerError(w http.ResponseWriter, err error) {

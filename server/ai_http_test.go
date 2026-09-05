@@ -299,6 +299,32 @@ func TestLiveRunnerDiscoveryOnchainIncludesPriceInfo(t *testing.T) {
 	require.Contains(t, w.Body.String(), "price_info")
 }
 
+func TestLiveRunnerDiscoveryOnchainIncludesSellPrice(t *testing.T) {
+	lp := newLiveRunnerHTTPOnchain(t)
+	registerLiveRunnerForSession(t, lp, &liveRunnerRegistrationOptions{
+		RunnerID:  t.Name(),
+		PriceInfo: usageSellPriceInfo(),
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/discovery", nil)
+	lp.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp []liveRunnerDiscoveryEntry
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	require.Len(t, resp[0].Runners, 1)
+	info := resp[0].Runners[0].PriceInfo
+	require.NotNil(t, info)
+	require.Equal(t, "wei", info.Currency)
+	require.Equal(t, runner.LiveRunnerPaymentUnitUsage, info.Unit)
+	require.NotNil(t, info.Sell)
+	require.Equal(t, "image", info.Sell.Unit)
+	require.Equal(t, 500, info.Sell.UpchargeBps)
+	require.NotNil(t, info.Upstream)
+	require.Equal(t, "fal-ai/flux/dev", info.Upstream.EndpointID)
+}
+
 func TestLiveRunnerDiscoveryServerlessWorker(t *testing.T) {
 	lp := newServerlessLiveRunnerHTTP(t, false, 3)
 	lp.node.SetBasePriceForCap("default", core.Capability_LiveVideoToVideo, "scope", core.NewFixedPrice(big.NewRat(7, 1)))
@@ -672,6 +698,154 @@ func TestLiveRunnerReserveSessionOnchainReturnsPaymentChallenge(t *testing.T) {
 	require.Equal(t, int64(1), oInfo.GetPriceInfo().GetPixelsPerUnit())
 	require.Equal(t, challenge.Orchestrator, oInfo.GetTranscoder())
 	require.Nil(t, oInfo.GetCapabilities())
+}
+
+func TestLiveRunnerUsageChallengeIncludesSignedQuote(t *testing.T) {
+	lp := newLiveRunnerHTTPOnchain(t)
+	registerLiveRunnerForSession(t, lp, &liveRunnerRegistrationOptions{
+		PriceInfo: usageSellPriceInfo(),
+	})
+
+	challenge, oInfo := requestLiveRunnerPaymentChallenge(t, lp, "runner-1")
+	require.NotNil(t, challenge.Quote)
+	require.NotEmpty(t, challenge.Quote.QuoteID)
+	require.Equal(t, "image", challenge.Quote.SellUnit)
+	require.Equal(t, 500, challenge.Quote.UpchargeBps)
+	require.Equal(t, challenge.ManifestID, challenge.Quote.ManifestID)
+	require.NotEmpty(t, challenge.Quote.OrchSig)
+	require.Equal(t, oInfo.GetPriceInfo().GetPricePerUnit(), challenge.Quote.WeiPricePerUnit)
+	require.Equal(t, int64(1), challenge.Quote.WeiPixelsPerUnit)
+	require.Greater(t, oInfo.GetPriceInfo().GetPricePerUnit(), int64(0))
+}
+
+func TestParseRunnerBillableUnits(t *testing.T) {
+	units, present, err := parseRunnerBillableUnits([]byte(`{"billable_units":2.5,"request_id":"r"}`))
+	require.NoError(t, err)
+	require.True(t, present)
+	require.Equal(t, 0, units.Cmp(big.NewRat(5, 2)))
+
+	units, present, err = parseRunnerBillableUnits([]byte(`{"billable_units":0}`))
+	require.NoError(t, err)
+	require.True(t, present)
+	require.Equal(t, 0, units.Sign())
+
+	units, present, err = parseRunnerBillableUnits([]byte(`{"billable_units":null}`))
+	require.NoError(t, err)
+	require.True(t, present)
+	require.Nil(t, units)
+
+	units, present, err = parseRunnerBillableUnits([]byte(`{"request_id":"r"}`))
+	require.NoError(t, err)
+	require.False(t, present)
+	require.Nil(t, units)
+}
+
+func TestLiveRunnerUsageSettlesFromRunnerBillableUnits(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"output":{"url":"https://cdn.example/out.jpg"},"request_id":"req-1","billable_units":2}`))
+	}))
+	defer upstream.Close()
+
+	lp := newLiveRunnerHTTPOnchain(t)
+	registerLiveRunnerForSession(t, lp, &liveRunnerRegistrationOptions{
+		RunnerURL: upstream.URL,
+		Mode:      runner.LiveRunnerModeSingleShot,
+		PriceInfo: usageSellPriceInfo(),
+	})
+	orch := lp.orchestrator.(*stubOrchestrator)
+	orch.balances = make(map[ethcommon.Address]map[core.ManifestID]*big.Rat)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/apps/runner-1/app/generate", strings.NewReader(`{"prompt":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	setRequestHeaders(req, liveRunnerSenderHeaders(orch))
+	lp.ServeHTTP(w, req)
+	require.Equal(t, http.StatusPaymentRequired, w.Code)
+	challenge, oInfo := decodeLiveRunnerPaymentChallenge(t, w.Body.Bytes())
+	require.NotNil(t, challenge.Quote)
+
+	orch.paymentCredit = big.NewRat(oInfo.GetPriceInfo().GetPricePerUnit()*4, 1)
+	headers := liveRunnerReservationPaymentHeadersWithPrice(t, orch, oInfo.GetAuthToken(), challenge.ManifestID, oInfo.GetPriceInfo())
+	headers.Set(liveRunnerSenderHeader, orch.Address().Hex())
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/apps/runner-1/app/generate", strings.NewReader(`{"prompt":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	setRequestHeaders(req, headers)
+	lp.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, challenge.Quote.QuoteID, w.Header().Get("X-Livepeer-Quote-Id"))
+	require.NotEmpty(t, w.Header().Get("X-Livepeer-Usage-Attestation"))
+	gotUnits, ok := new(big.Rat).SetString(w.Header().Get("X-Livepeer-Billable-Units"))
+	require.True(t, ok)
+	require.Equal(t, 0, gotUnits.Cmp(big.NewRat(2, 1)))
+
+	balance := orch.Balance(orch.Address(), core.ManifestID(challenge.ManifestID))
+	require.NotNil(t, balance)
+	debit := new(big.Rat).Mul(big.NewRat(oInfo.GetPriceInfo().GetPricePerUnit(), 1), big.NewRat(2, 1))
+	want := new(big.Rat).Sub(orch.paymentCredit, debit)
+	require.Equal(t, 0, balance.Cmp(want))
+}
+
+func TestLiveRunnerUsageFailClosedMissingUnits(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"output":{"url":"https://cdn.example/out.jpg"},"request_id":"req-1"}`))
+	}))
+	defer upstream.Close()
+
+	lp := newLiveRunnerHTTPOnchain(t)
+	registerLiveRunnerForSession(t, lp, &liveRunnerRegistrationOptions{
+		RunnerURL: upstream.URL,
+		Mode:      runner.LiveRunnerModeSingleShot,
+		PriceInfo: usageSellPriceInfo(),
+	})
+	orch := lp.orchestrator.(*stubOrchestrator)
+	orch.balances = make(map[ethcommon.Address]map[core.ManifestID]*big.Rat)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/apps/runner-1/app/generate", strings.NewReader(`{"prompt":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	setRequestHeaders(req, liveRunnerSenderHeaders(orch))
+	lp.ServeHTTP(w, req)
+	require.Equal(t, http.StatusPaymentRequired, w.Code)
+	challenge, oInfo := decodeLiveRunnerPaymentChallenge(t, w.Body.Bytes())
+
+	orch.paymentCredit = big.NewRat(oInfo.GetPriceInfo().GetPricePerUnit()*4, 1)
+	headers := liveRunnerReservationPaymentHeadersWithPrice(t, orch, oInfo.GetAuthToken(), challenge.ManifestID, oInfo.GetPriceInfo())
+	headers.Set(liveRunnerSenderHeader, orch.Address().Hex())
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/apps/runner-1/app/generate", strings.NewReader(`{"prompt":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	setRequestHeaders(req, headers)
+	lp.ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.Contains(t, w.Body.String(), "billable_units")
+	require.Empty(t, w.Header().Get("X-Livepeer-Usage-Attestation"))
+}
+
+func usageSellPriceInfo() *runner.LiveRunnerPriceInfo {
+	return &runner.LiveRunnerPriceInfo{
+		Price: json.Number("0.02625"),
+		Unit:  "fixed",
+		Upstream: &runner.LiveRunnerUpstreamPrice{
+			Provider:   "fal",
+			EndpointID: "fal-ai/flux/dev",
+			Unit:       "image",
+			UnitPrice:  json.Number("0.025"),
+			Currency:   "USD",
+		},
+		Sell: &runner.LiveRunnerSellPrice{
+			Unit:        "image",
+			Price:       json.Number("0.02625"),
+			Currency:    "USD",
+			UpchargeBps: 500,
+		},
+	}
 }
 
 func TestLiveRunnerFixedPriceSessionAccountsOnce(t *testing.T) {

@@ -1377,6 +1377,51 @@ func TestLiveRunnerRegistry_ConvertsUSDToWEI(t *testing.T) {
 	}
 }
 
+func TestLiveRunnerRegistry_ConvertsSellPriceToUsageWei(t *testing.T) {
+	prevWatcher := core.PriceFeedWatcher
+	core.PriceFeedWatcher = stubPriceFeedWatcher{price: eth.PriceData{Price: big.NewRat(2000, 1)}}
+	defer func() { core.PriceFeedWatcher = prevWatcher }()
+
+	registry := newOnchainLiveRunnerTestRegistry()
+	req := liveRunnerTestHeartbeat("runner-sell")
+	req.PriceInfo = LiveRunnerPriceInfo{
+		Price: json.Number("0.02625"),
+		Unit:  "fixed",
+		Upstream: &LiveRunnerUpstreamPrice{
+			Provider:   "fal",
+			EndpointID: "fal-ai/flux/dev",
+			Unit:       "image",
+			UnitPrice:  json.Number("0.025"),
+			Currency:   "USD",
+		},
+		Sell: &LiveRunnerSellPrice{
+			Unit:        "image",
+			Price:       json.Number("0.02625"),
+			Currency:    "USD",
+			UpchargeBps: 500,
+		},
+	}
+	liveRunnerTestRegister(t, registry, req)
+
+	paymentInfo, err := registry.PaymentInfo(req.RunnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paymentInfo == nil || paymentInfo.Unit != LiveRunnerPaymentUnitUsage || paymentInfo.Currency != "wei" {
+		t.Fatalf("unexpected converted sell price: %+v", paymentInfo)
+	}
+	if paymentInfo.Sell == nil || paymentInfo.Sell.UpchargeBps != 500 {
+		t.Fatalf("expected USD sell to be preserved: %+v", paymentInfo.Sell)
+	}
+	gotSell, ok := new(big.Rat).SetString(paymentInfo.Sell.Price.String())
+	if !ok || gotSell.Cmp(big.NewRat(2625, 100000)) != 0 {
+		t.Fatalf("unexpected sell price %s", paymentInfo.Sell.Price)
+	}
+	if paymentInfo.Upstream == nil || paymentInfo.Upstream.EndpointID != "fal-ai/flux/dev" {
+		t.Fatalf("expected upstream snapshot: %+v", paymentInfo.Upstream)
+	}
+}
+
 func TestLiveRunnerRegistry_SharedURLAppKeepsPerRunnerPrices(t *testing.T) {
 	prevWatcher := core.PriceFeedWatcher
 	core.PriceFeedWatcher = stubPriceFeedWatcher{price: eth.PriceData{Price: big.NewRat(2000, 1)}}

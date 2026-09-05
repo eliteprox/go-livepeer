@@ -487,6 +487,17 @@ func (orch *orchestrator) DebitFees(addr ethcommon.Address, manifestID ManifestI
 	orch.node.Balances.Debit(addr, manifestID, priceRat.Mul(priceRat, big.NewRat(pixels, 1)))
 }
 
+func (orch *orchestrator) DebitFeesRat(addr ethcommon.Address, manifestID ManifestID, price *net.PriceInfo, units *big.Rat) {
+	if orch.node == nil || orch.node.Balances == nil {
+		return
+	}
+	if units == nil || units.Sign() == 0 || price == nil || price.GetPixelsPerUnit() == 0 {
+		return
+	}
+	priceRat := big.NewRat(price.GetPricePerUnit(), price.GetPixelsPerUnit())
+	orch.node.Balances.Debit(addr, manifestID, new(big.Rat).Mul(priceRat, units))
+}
+
 func (orch *orchestrator) Balance(addr ethcommon.Address, manifestID ManifestID) *big.Rat {
 	if orch.node == nil || orch.node.Balances == nil {
 		return nil
